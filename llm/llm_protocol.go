@@ -8,7 +8,9 @@ type LLMCommunicationService interface {
 }
 
 type LLMModel struct {
-	Name string `json:"name"` // 模型名称
+	Name          string `json:"name"`           // 模型名称
+	Model         string `json:"model"`          // 模型名称
+	ContextLength int64  `json:"context_length"` // 上下文长度
 }
 
 // LLMMessage 是给大模型发送的消息结构体
@@ -19,6 +21,7 @@ type LLMMessage struct {
 	Model       string   `json:"model"`       // 使用的模型名称
 	Stream      bool     `json:"stream"`      // 是否启用流式输出
 	Attachments []string `json:"attachments"` // 附件文件列表,如图片或文档,可以是URL或Base64编码的字符串
+	Think       bool     `json:"think"`       // 是否启用思考模式,如果为true,模型会在生成响应前先输出思考过程,如推理步骤或中间结果
 }
 
 // LLMResponse 是大模型的响应结构体

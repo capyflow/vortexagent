@@ -2,8 +2,17 @@ package vllm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"time"
+
+	"github.com/capyflow/vortexagent/pkg"
+)
+
+const (
+	listModels = "/api/ps"
 )
 
 type OllamaOption func(o *OllamaLLMService)
@@ -13,6 +22,28 @@ type OllamaLLMService struct {
 	ctx            context.Context                           // 上下文对象，用于控制请求的生命周期
 	hcli           *http.Client                              // HTTP客户端，用于发送HTTP请求
 	selectEndpoint func(ctx context.Context) (string, error) // 选择服务端点的函数，返回服务端点URL
+	streamInterval time.Duration                             // 流式返回的频率
+}
+
+// WithSelectEndpoint 设置服务端点的选项
+func WithSelectEndpoint(selectEndpoint func(ctx context.Context) (string, error)) OllamaOption {
+	return func(o *OllamaLLMService) {
+		o.selectEndpoint = selectEndpoint
+	}
+}
+
+// WithStreamInterval 设置流式返回的频率的选项
+func WithStreamInterval(interval time.Duration) OllamaOption {
+	return func(o *OllamaLLMService) {
+		o.streamInterval = interval
+	}
+}
+
+// WithHttpClient 设置HTTP客户端的选项
+func WithHttpClient(hcli *http.Client) OllamaOption {
+	return func(o *OllamaLLMService) {
+		o.hcli = hcli
+	}
 }
 
 func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMService {
@@ -22,6 +53,7 @@ func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMSe
 		selectEndpoint: func(ctx context.Context) (string, error) {
 			panic("endpoint not found")
 		},
+		streamInterval: 500 * time.Millisecond,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -31,7 +63,36 @@ func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMSe
 
 // 列出可用的大模型列表
 func (os *OllamaLLMService) ListLLMModels() ([]*LLMModel, error) {
-	panic("not implemented")
+	ollamaEndpoint, err := os.selectEndpoint(os.ctx)
+	if nil != err {
+		return nil, err
+	}
+	url := ollamaEndpoint + listModels
+	fmt.Println(url)
+	resp, err := os.hcli.Get(url)
+	if nil != err {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, err
+	}
+	var result struct {
+		Models []*LLMModel `json:"models"`
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(raw, &result)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Models) == 0 {
+		return nil, pkg.ErrorsEnums.ErrModelsNotFound
+	}
+	return result.Models, nil
 }
 
 // 给大模型发送消息并接收响应
