@@ -1,18 +1,23 @@
 package vllm
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/capyflow/allspark-go/logx"
 	"github.com/capyflow/vortexagent/pkg"
 )
 
 const (
 	listModels = "/api/ps"
+	modelChat  = "/api/chat"
 )
 
 type OllamaOption func(o *OllamaLLMService)
@@ -108,7 +113,100 @@ func (os *OllamaLLMService) SendMessage(message *LLMMessage) (string, error) {
 	return result, nil
 }
 
+type OllamaResponse struct {
+	Model              string    `json:"model"`
+	CreatedAt          time.Time `json:"created_at"`
+	Message            Message   `json:"message"`
+	DoneReason         string    `json:"done_reason"`
+	Done               bool      `json:"done"`
+	TotalDuration      int       `json:"total_duration"`
+	LoadDuration       int       `json:"load_duration"`
+	PromptEvalCount    int       `json:"prompt_eval_count"`
+	PromptEvalDuration int       `json:"prompt_eval_duration"`
+	EvalCount          int       `json:"eval_count"`
+	EvalDuration       int       `json:"eval_duration"`
+}
+
+type Message struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	ToolCalls []struct {
+		Function struct {
+			Name      string `json:"name"`
+			Arguments struct {
+				Format   string `json:"format"`
+				Location string `json:"location"`
+			} `json:"arguments"`
+		} `json:"function"`
+	} `json:"tool_calls"`
+}
+
 // 给大模型发送消息并以流式方式接收响应
 func (os *OllamaLLMService) SendMessageStream(message *LLMMessage) (<-chan string, error) {
-	panic("not implemented")
+	message.Stream = true
+	endpoint, err := os.selectEndpoint(os.ctx)
+	if nil != err {
+		logx.Errorf("OllamaLLMService|SendMessageStream|select endpoint error: %v", err)
+		return nil, err
+	}
+	url := endpoint + modelChat
+	raw, err := json.Marshal(message)
+	if nil != err {
+		logx.Errorf("OllamaLLMService|SendMessageStream|marshal message error: %v", err)
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	if nil != err {
+		logx.Errorf("OllamaLLMService|SendMessageStream|new request error: %v", err)
+		return nil, err
+	}
+	resp, err := os.hcli.Do(req)
+	if nil != err {
+		logx.Errorf("OllamaLLMService|SendMessageStream|do request error: %v", err)
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		rawErr, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("ollama request failed: status=%d body=%s", resp.StatusCode, string(rawErr))
+	}
+
+	respRaw, err := io.ReadAll(resp.Body)
+	if nil != err {
+		logx.Errorf("OllamaLLMService|SendMessageStream|read response error: %v", err)
+		return nil, err
+	}
+
+	logx.Infof("OllamaLLMService|SendMessageStream|read response %s", string(respRaw))
+
+	resultChan := make(chan string)
+	go func() {
+		defer close(resultChan)
+		defer resp.Body.Close()
+		reader := bufio.NewReader(bytes.NewReader(respRaw))
+		for {
+			line, readErr := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				rawLine := strings.TrimSpace(string(line))
+				logx.Debugf("OllamaLLMService|SendMessageStream|raw line: %s", rawLine)
+				var ollamaResp OllamaResponse
+				err := json.Unmarshal([]byte(rawLine), &ollamaResp)
+				if err != nil {
+					logx.Errorf("OllamaLLMService|SendMessageStream|unmarshal error: %v", err)
+					continue
+				}
+				if ollamaResp.Message.Content != "" {
+					resultChan <- ollamaResp.Message.Content
+				}
+			}
+			if readErr != nil {
+				if readErr != io.EOF {
+					logx.Errorf("OllamaLLMService|SendMessageStream|read stream error: %v", readErr)
+				}
+				break
+			}
+		}
+	}()
+	return resultChan, nil
 }
