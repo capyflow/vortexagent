@@ -3,7 +3,7 @@ module github.com/capyflow/vortexagent
 go 1.25.5
 
 require (
-	github.com/capyflow/allspark-go v0.1.3
+	github.com/capyflow/allspark-go v0.1.5
 	github.com/smartystreets/goconvey v1.8.1
 )
 

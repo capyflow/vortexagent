@@ -15,6 +15,11 @@ import (
 	"github.com/capyflow/vortexagent/pkg"
 )
 
+func init() {
+	logx.WithEnableFile(false)
+	logx.ResetLogger()
+}
+
 const (
 	listModels = "/api/ps"
 	modelChat  = "/api/chat"
