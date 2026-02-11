@@ -27,7 +27,7 @@ func TestOllamaChat(t *testing.T) {
 			return "http://192.168.10.205:11434", nil
 		}))
 		convey.So(os, convey.ShouldNotBeNil)
-		respChan, err := os.SendMessageStream(&LLMMessage{
+		resp, err := os.SendMessage(&LLMMessage{
 			Model: "qwen3-vl:8b",
 			Contents: []*LLMMessageContent{
 				{
@@ -35,10 +35,12 @@ func TestOllamaChat(t *testing.T) {
 					Content: "请介绍一下你自己",
 				},
 			},
+			Think: true,
 		})
 		convey.So(err, convey.ShouldBeNil)
-		for s := range respChan {
-			t.Log(s)
-		}
+		t.Logf("result is %s", conv.ToJsonWithoutError(resp))
+		//for msg := range resp {
+		//	t.Logf("result => %s", conv.ToJsonWithoutError(msg))
+		//}
 	})
 }

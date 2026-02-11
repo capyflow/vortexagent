@@ -54,7 +54,7 @@ func WithHttpClient(hcli *http.Client) OllamaOption {
 func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMService {
 	s := &OllamaLLMService{
 		ctx:  ctx,
-		hcli: &http.Client{Timeout: 30 * time.Second},
+		hcli: &http.Client{Timeout: 10 * time.Minute},
 		selectEndpoint: func(ctx context.Context) (string, error) {
 			panic("endpoint not found")
 		},
@@ -64,6 +64,17 @@ func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMSe
 		opt(s)
 	}
 	return s
+}
+
+type OllamaStreamResponse struct {
+	Model     string `json:"model"`
+	CreatedAt string `json:"created_at"`
+	Message   struct {
+		Role     string `json:"role"`
+		Content  string `json:"content"`
+		Thinking string `json:"thinking"`
+	} `json:"message"`
+	Done bool `json:"done"`
 }
 
 // 列出可用的大模型列表
@@ -101,44 +112,28 @@ func (os *OllamaLLMService) ListLLMModels() ([]*LLMModel, error) {
 }
 
 // 给大模型发送消息并接收响应
-func (os *OllamaLLMService) SendMessage(message *LLMMessage) (string, error) {
+func (os *OllamaLLMService) SendMessage(message *LLMMessage) (*LLMResponse, error) {
 	resultChan, err := os.SendMessageStream(message)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var result string
+	resp := &LLMResponse{Stream: false, Finished: true}
 	for r := range resultChan {
-		result += r
+		var rsp LLMResponse
+		if err := json.Unmarshal([]byte(r), &rsp); err != nil {
+			logx.Errorf("OllamaLLMService|SendMessage|unmarshal stream error: %v", err)
+			continue
+		}
+		if message.Think && len(rsp.Think) > 0 {
+			resp.Think += rsp.Think
+		} else if len(rsp.Content) > 0 {
+			resp.Content += rsp.Content
+		}
+		if rsp.Finished {
+			break
+		}
 	}
-	return result, nil
-}
-
-type OllamaResponse struct {
-	Model              string    `json:"model"`
-	CreatedAt          time.Time `json:"created_at"`
-	Message            Message   `json:"message"`
-	DoneReason         string    `json:"done_reason"`
-	Done               bool      `json:"done"`
-	TotalDuration      int       `json:"total_duration"`
-	LoadDuration       int       `json:"load_duration"`
-	PromptEvalCount    int       `json:"prompt_eval_count"`
-	PromptEvalDuration int       `json:"prompt_eval_duration"`
-	EvalCount          int       `json:"eval_count"`
-	EvalDuration       int       `json:"eval_duration"`
-}
-
-type Message struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	ToolCalls []struct {
-		Function struct {
-			Name      string `json:"name"`
-			Arguments struct {
-				Format   string `json:"format"`
-				Location string `json:"location"`
-			} `json:"arguments"`
-		} `json:"function"`
-	} `json:"tool_calls"`
+	return resp, nil
 }
 
 // 给大模型发送消息并以流式方式接收响应
@@ -156,6 +151,8 @@ func (os *OllamaLLMService) SendMessageStream(message *LLMMessage) (<-chan strin
 		return nil, err
 	}
 
+	logx.Debugf("OllamaLLMService|SendMessageStream|request body: %s", string(raw))
+
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
 	if nil != err {
 		logx.Errorf("OllamaLLMService|SendMessageStream|new request error: %v", err)
@@ -172,33 +169,32 @@ func (os *OllamaLLMService) SendMessageStream(message *LLMMessage) (<-chan strin
 		return nil, fmt.Errorf("ollama request failed: status=%d body=%s", resp.StatusCode, string(rawErr))
 	}
 
-	respRaw, err := io.ReadAll(resp.Body)
-	if nil != err {
-		logx.Errorf("OllamaLLMService|SendMessageStream|read response error: %v", err)
-		return nil, err
-	}
-
-	logx.Infof("OllamaLLMService|SendMessageStream|read response %s", string(respRaw))
-
 	resultChan := make(chan string)
 	go func() {
 		defer close(resultChan)
 		defer resp.Body.Close()
-		reader := bufio.NewReader(bytes.NewReader(respRaw))
+		reader := bufio.NewReader(resp.Body)
 		for {
 			line, readErr := reader.ReadBytes('\n')
 			if len(line) > 0 {
-				rawLine := strings.TrimSpace(string(line))
-				logx.Debugf("OllamaLLMService|SendMessageStream|raw line: %s", rawLine)
-				var ollamaResp OllamaResponse
-				err := json.Unmarshal([]byte(rawLine), &ollamaResp)
-				if err != nil {
-					logx.Errorf("OllamaLLMService|SendMessageStream|unmarshal error: %v", err)
+				lineStr := strings.TrimSpace(string(line))
+				var ollamaResp OllamaStreamResponse
+				if err := json.Unmarshal([]byte(lineStr), &ollamaResp); err != nil {
+					logx.Errorf("OllamaLLMService|SendMessageStream|unmarshal stream error: %v", err)
 					continue
 				}
-				if ollamaResp.Message.Content != "" {
-					resultChan <- ollamaResp.Message.Content
+				llmResp := LLMResponse{
+					Finished: ollamaResp.Done,
+					Stream:   true,
 				}
+				if message.Think && len(ollamaResp.Message.Thinking) > 0 {
+					llmResp.Think = ollamaResp.Message.Thinking
+				} else if len(ollamaResp.Message.Content) > 0 {
+					llmResp.Content = ollamaResp.Message.Content
+				}
+
+				marshal, _ := json.Marshal(llmResp)
+				resultChan <- string(marshal)
 			}
 			if readErr != nil {
 				if readErr != io.EOF {

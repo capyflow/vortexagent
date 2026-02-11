@@ -21,7 +21,7 @@ type LLMMessageContent struct {
 
 // LLMMessage 是给大模型发送的消息结构体
 type LLMMessage struct {
-	Contents []*LLMMessageContent `json:"contents,omitempty"` // 消息内容列表，可以包含多条消息
+	Contents []*LLMMessageContent `json:"messages,omitempty"` // 消息内容列表，可以包含多条消息
 	Model    string               `json:"model,omitempty"`    // 使用的模型名称
 	Stream   bool                 `json:"stream,omitempty"`   // 是否启用流式输出
 	Think    bool                 `json:"think,omitempty"`    // 是否启用思考模式,如果为true,模型会在生成响应前先输出思考过程,如推理步骤或中间结果
@@ -31,6 +31,7 @@ type LLMMessage struct {
 // LLMResponse 是大模型的响应结构体
 type LLMResponse struct {
 	Content  string `json:"content"`  // 响应内容
+	Think    string `json:"think"`    // 模型在生成响应时输出的思考过程
 	Stream   bool   `json:"stream"`   // 是否启用流式输出
 	Finished bool   `json:"finished"` // 是否完成响应
 }
