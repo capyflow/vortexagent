@@ -66,7 +66,7 @@ func NewOllamaLLMService(ctx context.Context, opts ...OllamaOption) *OllamaLLMSe
 	return s
 }
 
-type OllamaStreamResponse struct {
+type ollamaStreamResponse struct {
 	Model     string `json:"model"`
 	CreatedAt string `json:"created_at"`
 	Message   struct {
@@ -178,7 +178,7 @@ func (os *OllamaLLMService) SendMessageStream(message *LLMMessage) (<-chan strin
 			line, readErr := reader.ReadBytes('\n')
 			if len(line) > 0 {
 				lineStr := strings.TrimSpace(string(line))
-				var ollamaResp OllamaStreamResponse
+				var ollamaResp ollamaStreamResponse
 				if err := json.Unmarshal([]byte(lineStr), &ollamaResp); err != nil {
 					logx.Errorf("OllamaLLMService|SendMessageStream|unmarshal stream error: %v", err)
 					continue
