@@ -26,6 +26,9 @@ const (
 	DefaultMaxFileSize int64 = 512 * 1024
 	// DefaultMaxResults 检索结果的默认返回条数。
 	DefaultMaxResults = 5
+	// MaxSearchResults 检索结果的硬上限：模型可以传 limit，但不能超过该值，
+	// 防止一次检索把整个知识库塞进上下文。
+	MaxSearchResults = 50
 	// MaxReadDocumentSize read_document 的全文截断上限（100KB）。
 	MaxReadDocumentSize = 100 * 1024
 	// binaryCheckSize 二进制检测读取的文件前缀字节数。
@@ -95,15 +98,21 @@ func (k *KB) SetExtensions(exts []string) {
 
 // Search 在知识库全部根目录内执行大小写不敏感的全文关键词检索。
 //
+// query 支持空格分隔的多个关键词：所有关键词都在同一行出现才算命中
+// （如 "vortex agent" 会匹配同时包含两个词的任意行，而非整串连续匹配）。
 // 返回的每个 Result 对应一个命中行；文件按命中行数降序、路径字典序升序稳定排序后，
-// 逐文件展平并按 limit 截断。limit<=0 时使用默认条数（DefaultMaxResults）。
+// 逐文件展平并按 limit 截断。limit<=0 时使用默认条数（DefaultMaxResults），
+// 超过 MaxSearchResults 时钳制到该上限。
 // 检索过程中检查 ctx，取消时提前退出并返回 ctx 的错误。
 func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = k.maxResults
 	}
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
+	if limit > MaxSearchResults {
+		limit = MaxSearchResults
+	}
+	tokens := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(tokens) == 0 {
 		return nil, errors.New("检索关键词不能为空")
 	}
 
@@ -140,7 +149,7 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 			if err != nil {
 				return nil
 			}
-			if hits := k.searchFile(ctx, path, filepath.ToSlash(rel), query); len(hits) > 0 {
+			if hits := k.searchFile(ctx, path, filepath.ToSlash(rel), tokens); len(hits) > 0 {
 				matched = append(matched, fileHits{path: filepath.ToSlash(rel), hits: hits})
 			}
 			return nil
@@ -184,7 +193,8 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 
 // searchFile 在单个文件中检索关键词，返回命中行列表；文件超限、二进制、
 // 读取失败或无命中时返回 nil。absPath 用于读取，relPath 用于结果展示。
-func (k *KB) searchFile(ctx context.Context, absPath, relPath, query string) []Result {
+// tokens 为小写化后的关键词列表，命中行必须包含全部关键词。
+func (k *KB) searchFile(ctx context.Context, absPath, relPath string, tokens []string) []Result {
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -202,15 +212,18 @@ func (k *KB) searchFile(ctx context.Context, absPath, relPath, query string) []R
 	if looksBinary(data) {
 		return nil // 二进制文件，跳过
 	}
-	// 整文快速预检，避免对不相关文件逐行做小写转换。
-	if !bytes.Contains(bytes.ToLower(data), []byte(query)) {
-		return nil
+	// 整文快速预检：所有关键词都出现才逐行匹配，避免对不相关文件逐行做小写转换。
+	lower := bytes.ToLower(data)
+	for _, tok := range tokens {
+		if !bytes.Contains(lower, []byte(tok)) {
+			return nil
+		}
 	}
 
 	lines := strings.Split(string(data), "\n")
 	hits := make([]Result, 0)
 	for i, line := range lines {
-		if !strings.Contains(strings.ToLower(line), query) {
+		if !lineContainsAll(line, tokens) {
 			continue
 		}
 		hits = append(hits, Result{
@@ -221,6 +234,17 @@ func (k *KB) searchFile(ctx context.Context, absPath, relPath, query string) []R
 		})
 	}
 	return hits
+}
+
+// lineContainsAll 判断一行（小写化后）是否包含全部关键词。
+func lineContainsAll(line string, tokens []string) bool {
+	lower := strings.ToLower(line)
+	for _, tok := range tokens {
+		if !strings.Contains(lower, tok) {
+			return false
+		}
+	}
+	return true
 }
 
 // buildContext 拼接命中行前后各 1 行上下文，带行号、换行分隔；
@@ -387,21 +411,22 @@ func NewKBTools(kb *KB) []*Tool {
 	return []*Tool{newSearchKnowledgeTool(kb), newReadDocumentTool(kb)}
 }
 
-// newSearchKnowledgeTool 构造检索工具：关键词必填、limit 可选（默认 5）。
+// newSearchKnowledgeTool 构造检索工具：query 必填（支持空格分隔的多关键词，
+// 全部命中才算）、limit 可选（默认 5，最大 50）。
 func newSearchKnowledgeTool(kb *KB) *Tool {
 	return &Tool{
 		name:        "search_knowledge",
-		description: "在本地文档知识库中按关键词全文检索，返回文件路径、行号、匹配行内容与上下文",
+		description: "在本地文档知识库中按关键词全文检索（支持空格分隔的多关键词，需全部命中同一行），返回文件路径、行号、匹配行内容与上下文",
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "检索关键词（大小写不敏感）",
+					"description": "检索关键词（大小写不敏感，可用空格分隔多个词）",
 				},
 				"limit": map[string]any{
 					"type":        "number",
-					"description": "返回结果条数上限，默认 5",
+					"description": "返回结果条数上限，默认 5，最大 50",
 				},
 			},
 			"required": []string{"query"},
@@ -418,6 +443,9 @@ func newSearchKnowledgeTool(kb *KB) *Tool {
 					return "", fmt.Errorf("参数 limit 不合法: %w", err)
 				}
 				limit = n
+			}
+			if limit > MaxSearchResults {
+				limit = MaxSearchResults
 			}
 			results, err := kb.Search(ctx, query, limit)
 			if err != nil {

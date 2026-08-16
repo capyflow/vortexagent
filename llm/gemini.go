@@ -153,25 +153,32 @@ func (p *GeminiProvider) buildRequest(req *ChatRequest, model string) (*wireGemi
 
 	// contents：记录 assistant 工具调用的 ID -> 名称，供后续 tool 消息回填 function_response 名称
 	toolNames := make(map[string]string)
-	for _, m := range req.Messages {
+	for i := 0; i < len(req.Messages); i++ {
+		m := req.Messages[i]
 		switch m.Role {
 		case RoleSystem:
 			continue
 		case RoleTool:
-			// Gemini 无 tool 角色：工具结果以 user 角色的 function_response part 回传
-			name := toolNames[m.ToolCallID]
-			if name == "" {
-				name = m.ToolCallID // 找不到时回退用调用 ID 作为名称
-			}
-			wire.Contents = append(wire.Contents, wireGeminiContent{
-				Role: "user",
-				Parts: []wireGeminiPart{{
+			// Gemini 无 tool 角色：工具结果以 user 角色的 function_response part 回传。
+			// 同一轮 assistant 的多个并行工具调用，其结果必须合并进同一条 user 消息
+			// 且顺序与 function_call 一致（Gemini API 要求，拆成多条会报错）。
+			parts := make([]wireGeminiPart, 0, 2)
+			for i < len(req.Messages) && req.Messages[i].Role == RoleTool {
+				tm := req.Messages[i]
+				name := toolNames[tm.ToolCallID]
+				if name == "" {
+					name = tm.ToolCallID // 找不到时回退用调用 ID 作为名称
+				}
+				parts = append(parts, wireGeminiPart{
 					FunctionResponse: &wireGeminiFunctionResponse{
 						Name:     name,
-						Response: map[string]any{"result": geminiTextOf(m)},
+						Response: map[string]any{"result": geminiTextOf(tm)},
 					},
-				}},
-			})
+				})
+				i++
+			}
+			wire.Contents = append(wire.Contents, wireGeminiContent{Role: "user", Parts: parts})
+			i-- // 抵消外层循环自增
 		case RoleUser, RoleAssistant:
 			role := "user"
 			if m.Role == RoleAssistant {

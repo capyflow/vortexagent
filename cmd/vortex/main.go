@@ -36,6 +36,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 0. 加载 .env（若存在）：填充未设置的环境变量，不覆盖已有值
+	if err := loadDotEnv(".env"); err != nil {
+		fmt.Fprintln(os.Stderr, "警告: 加载 .env 失败:", err)
+	}
+
 	// 1. 创建 LLM provider
 	apiKey := os.Getenv(cfg.Provider.APIKeyEnv)
 	if apiKey == "" {
@@ -116,12 +121,20 @@ func main() {
 	session := agent.NewSession(cfg.Provider.Model)
 
 	fmt.Printf("vortex 文档 agent 已启动（provider=%s, model=%s, 工具: %s）\n",
-		provider.Name(), modelName(ag, cfg), strings.Join(registry.Names(), ", "))
+		provider.Name(), modelName(cfg), strings.Join(registry.Names(), ", "))
 	fmt.Println("输入问题开始对话，/help 查看命令。")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	exit := false
 	for {
+		// Ctrl+C（SIGINT）会取消 ctx：中断当前请求后直接结束会话。
+		// 注意 signal.NotifyContext 会一直拦截信号，若不在此退出，
+		// 后续 Ctrl+C 无法再触发默认终止行为，用户会被困在 REPL 里。
+		if ctx.Err() != nil {
+			fmt.Println()
+			break
+		}
 		fmt.Print("\n> ")
 		if !scanner.Scan() {
 			break
@@ -130,8 +143,8 @@ func main() {
 		if line == "" {
 			continue
 		}
-		if handleCommand(line, session, registry) {
-			if line == "/exit" {
+		if handleCommand(line, session, registry, &exit) {
+			if exit {
 				break
 			}
 			continue
@@ -149,10 +162,11 @@ func main() {
 	}
 }
 
-// handleCommand 处理斜杠命令，返回 true 表示已处理。
-func handleCommand(line string, session *agent.Session, registry *agent.Registry) bool {
+// handleCommand 处理斜杠命令，返回 (是否已处理, 是否退出)。
+func handleCommand(line string, session *agent.Session, registry *agent.Registry, exit *bool) bool {
 	switch line {
 	case "/exit", "/quit":
+		*exit = true
 		return true
 	case "/help":
 		fmt.Println("命令: /help 帮助  /tools 工具列表  /clear 清空历史  /exit 退出")
@@ -176,7 +190,7 @@ func handleCommand(line string, session *agent.Session, registry *agent.Registry
 }
 
 // modelName 返回展示用的模型名。
-func modelName(_ *agent.Agent, cfg *Config) string {
+func modelName(cfg *Config) string {
 	if cfg.Provider.Model != "" {
 		return cfg.Provider.Model
 	}

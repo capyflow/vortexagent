@@ -341,6 +341,49 @@ func TestAnthropic_HTTPError(t *testing.T) {
 	}
 }
 
+// TestAnthropic_ThinkingDropsTemperature 校验思考模式与温度冲突：启用 thinking 时
+// temperature 必须从请求体中移除（Anthropic API 禁止同时设置）。
+func TestAnthropic_ThinkingDropsTemperature(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var sent struct {
+			Thinking *struct {
+				Type string `json:"type"`
+			} `json:"thinking"`
+			Temperature *float64 `json:"temperature"`
+		}
+		if err := json.Unmarshal(body, &sent); err != nil {
+			t.Fatalf("解析请求体失败: %v", err)
+		}
+		if sent.Thinking == nil {
+			t.Error("thinking 应已启用")
+		}
+		if sent.Temperature != nil {
+			t.Errorf("启用 thinking 时 temperature 不应发送, 实际 %v", *sent.Temperature)
+		}
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	prov := NewAnthropicProvider("test-key", WithBaseURL(srv.URL), WithThinkingBudget(1024))
+
+	temp := 0.7
+	if _, err := prov.Chat(context.Background(), &ChatRequest{
+		Model:       "m",
+		Temperature: &temp,
+		Thinking:    true,
+	}, nil); err != nil {
+		t.Fatalf("Chat 失败: %v", err)
+	}
+}
+
+// TestAnthropic_MissingAPIKey 校验空 API key 直接报错（与 OpenAI/Gemini 行为一致）。
+func TestAnthropic_MissingAPIKey(t *testing.T) {
+	prov := NewAnthropicProvider("")
+	if _, err := prov.Chat(context.Background(), &ChatRequest{Model: "m"}, nil); err == nil {
+		t.Error("空 API key 应报错")
+	}
+}
+
 // TestAnthropic_MissingModel 校验未指定模型时报错。
 func TestAnthropic_MissingModel(t *testing.T) {
 	prov := NewAnthropicProvider("test-key")

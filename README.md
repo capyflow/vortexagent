@@ -10,6 +10,7 @@
 
 ```bash
 # 1. 配置 API 密钥（三选一，对应 vortex.json 中的 provider.name）
+#    也可以把密钥写进项目根目录的 .env 文件（每行一条 KEY=VALUE，已存在的环境变量优先）
 export OPENAI_API_KEY=sk-...        # OpenAI 兼容（DeepSeek/Qwen/智谱等）
 # export ANTHROPIC_API_KEY=sk-ant-...
 # export GEMINI_API_KEY=...
@@ -24,7 +25,7 @@ mkdir -p docs && echo "Vortex 是一个智能文档助手" > docs/intro.md
 go run ./cmd/vortex
 ```
 
-交互界面：直接输入问题回车，`/tools` 查看可用工具，`/clear` 清空历史，`/exit` 退出。
+交互界面：直接输入问题回车，`/tools` 查看可用工具，`/clear` 清空历史，`/exit`（或 `/quit`）退出。
 
 ## 架构
 
@@ -105,7 +106,7 @@ Python / Node 生态的现成 MCP server（如官方 filesystem、fetch 等）�
 
 | 工具 | 说明 |
 |------|------|
-| `search_knowledge` | 在知识库目录中按关键词检索，返回文件路径、行号、匹配行与上下文 |
+| `search_knowledge` | 在知识库目录中按关键词检索（支持空格分隔的多关键词，需全部命中同一行），返回文件路径、行号、匹配行与上下文 |
 | `read_document` | 读取知识库内指定文档全文（限制在知识库目录内，防越权读取） |
 
 ## 开发

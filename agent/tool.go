@@ -68,9 +68,14 @@ func (r *Registry) Names() []string {
 }
 
 // Params 将所有工具转换为发给模型的工具声明。
+//
+// 按工具名排序输出，保证每次请求的工具声明顺序确定
+// （map 迭代顺序随机会影响模型对工具的选择）。
 func (r *Registry) Params() []llm.ToolParam {
-	params := make([]llm.ToolParam, 0, len(r.tools))
-	for _, t := range r.tools {
+	names := r.Names()
+	params := make([]llm.ToolParam, 0, len(names))
+	for _, name := range names {
+		t := r.tools[name]
 		params = append(params, llm.ToolParam{
 			Name:        t.Name(),
 			Description: t.Description(),

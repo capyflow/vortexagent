@@ -286,6 +286,61 @@ func TestGemini_FunctionResponse_Mapping(t *testing.T) {
 	}
 }
 
+// TestGemini_ParallelToolResults_Merged 校验并行工具调用：同一轮 assistant 的
+// 多个 function_call 对应的多个 tool 结果必须合并进同一条 user 消息，且顺序与
+// 调用一致（Gemini API 要求，拆成多条 user 消息会报错）。
+func TestGemini_ParallelToolResults_Merged(t *testing.T) {
+	reqCh := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqCh <- body
+		fmt.Fprint(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"已查询"}]},"finishReason":"STOP"}]}`)
+	}))
+	defer srv.Close()
+
+	p := NewGeminiProvider("test-key", WithBaseURL(srv.URL))
+	_, err := p.Chat(context.Background(), &ChatRequest{
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{{Type: ContentText, Text: "同时查两个城市"}}},
+			{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Name: "get_weather", Arguments: map[string]any{"city": "beijing"}},
+					{ID: "call_2", Name: "get_weather", Arguments: map[string]any{"city": "shanghai"}},
+				},
+			},
+			{Role: RoleTool, Content: []Content{{Type: ContentText, Text: "晴"}}, ToolCallID: "call_1"},
+			{Role: RoleTool, Content: []Content{{Type: ContentText, Text: "多云"}}, ToolCallID: "call_2"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Chat 出错: %v", err)
+	}
+
+	var got wireGeminiRequest
+	if err := json.Unmarshal(<-reqCh, &got); err != nil {
+		t.Fatalf("解析请求体失败: %v", err)
+	}
+	// user / model(2 个 function_call) / user(2 个 function_response) = 3 条 contents
+	if len(got.Contents) != 3 {
+		t.Fatalf("应映射出 3 条 contents，实际 %d: %+v", len(got.Contents), got.Contents)
+	}
+	tr := got.Contents[2]
+	if tr.Role != "user" {
+		t.Errorf("第 3 条角色应为 user，实际 %q", tr.Role)
+	}
+	if len(tr.Parts) != 2 {
+		t.Fatalf("并行工具结果应合并为 1 条 user 消息中的 2 个 part，实际 %d 个 part", len(tr.Parts))
+	}
+	if tr.Parts[0].FunctionResponse == nil || tr.Parts[0].FunctionResponse.Name != "get_weather" ||
+		tr.Parts[0].FunctionResponse.Response["result"] != "晴" {
+		t.Errorf("第 1 个 function_response 映射错误: %+v", tr.Parts[0])
+	}
+	if tr.Parts[1].FunctionResponse == nil || tr.Parts[1].FunctionResponse.Response["result"] != "多云" {
+		t.Errorf("第 2 个 function_response 映射错误: %+v", tr.Parts[1])
+	}
+}
+
 // TestGemini_Usage 校验非流式 usage 解析（含缓存读 token）。
 func TestGemini_Usage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

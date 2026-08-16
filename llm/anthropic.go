@@ -124,6 +124,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, onDelta 
 	if req == nil {
 		return nil, fmt.Errorf("anthropic: ChatRequest 不能为 nil")
 	}
+	if p.apiKey == "" {
+		return nil, fmt.Errorf("anthropic: apiKey 为空，无法发起请求")
+	}
 	model := req.Model
 	if model == "" {
 		model = p.model
@@ -169,6 +172,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, onDelta 
 	}
 	if thinkingBudget > 0 {
 		body.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: thinkingBudget}
+		// Anthropic API 禁止 thinking 与 temperature 同时设置（会返回 400），
+		// 启用思考模式时丢弃温度参数。
+		body.Temperature = nil
 	}
 
 	payload, err := json.Marshal(body)
@@ -522,8 +528,10 @@ func (p *AnthropicProvider) handleStreamEvent(eventName, data string, state *str
 		if ev.Delta != nil && ev.Delta.StopReason != "" {
 			state.stopReason = ev.Delta.StopReason
 		}
+		// message_delta 事件中的 usage 是累计值（文档明确），直接赋值而非累加，
+		// 避免重复计费统计。
 		if ev.Usage != nil {
-			state.usage.OutputTokens += ev.Usage.OutputTokens
+			state.usage.OutputTokens = ev.Usage.OutputTokens
 		}
 	case "message_stop":
 		if onDelta != nil {

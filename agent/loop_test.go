@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -176,5 +177,94 @@ func TestRegistry_Duplicate(t *testing.T) {
 	}
 	if _, err := reg.Call(context.Background(), "missing", nil); err == nil {
 		t.Error("调用未知工具应报错")
+	}
+}
+
+// errProvider 是总是返回错误的假 provider。
+type errProvider struct{ name string }
+
+func (f *errProvider) Name() string { return f.name }
+func (f *errProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
+	return nil, errors.New("模拟 API 故障")
+}
+
+// emptyProvider 返回只有思考块、没有文本内容的回复（如 max_tokens 耗尽）。
+type emptyProvider struct{ name string }
+
+func (f *emptyProvider) Name() string { return f.name }
+func (f *emptyProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: []llm.Content{{Type: llm.ContentThinking, Thinking: "思考了很久"}},
+		},
+		FinishReason: "length",
+	}, nil
+}
+
+// TestAsk_EmptyAnswer 校验模型未返回文本内容时报错并回滚历史。
+func TestAsk_EmptyAnswer(t *testing.T) {
+	ag := New(Options{Provider: &emptyProvider{name: "empty"}, Model: "m1"})
+	session := NewSession("m1")
+
+	_, err := ag.Ask(context.Background(), session, "问题")
+	if err == nil {
+		t.Fatal("期望模型未返回文本内容时报错")
+	}
+	if len(session.Messages()) != 0 {
+		t.Errorf("空回答后历史应回滚为空，实际 %d 条: %+v", len(session.Messages()), session.Messages())
+	}
+}
+
+// TestAsk_RollsBackHistoryOnError 校验 Ask 失败时历史回滚到提问前，
+// 未回答的问题与半截工具轮次不会残留在会话中。
+func TestAsk_RollsBackHistoryOnError(t *testing.T) {
+	ag := New(Options{Provider: &errProvider{name: "err"}, Model: "m1"})
+	session := NewSession("m1")
+	session.Add(llm.NewTextMessage(llm.RoleUser, "之前的问题"))
+
+	_, err := ag.Ask(context.Background(), session, "新问题")
+	if err == nil {
+		t.Fatal("期望 Ask 报错")
+	}
+	if len(session.Messages()) != 1 {
+		t.Errorf("失败后历史应回滚到 1 条（之前的问题），实际 %d 条: %+v",
+			len(session.Messages()), session.Messages())
+	}
+	if session.Messages()[0].Content[0].Text != "之前的问题" {
+		t.Errorf("回滚后应保留提问前的历史，实际 %+v", session.Messages())
+	}
+}
+
+// namedTool 是带名称的最小工具实现。
+type namedTool struct{ name string }
+
+func (t *namedTool) Name() string        { return t.name }
+func (t *namedTool) Description() string { return "测试工具" }
+func (t *namedTool) Schema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *namedTool) Call(context.Context, map[string]any) (string, error) {
+	return "", nil
+}
+
+// TestRegistry_ParamsSorted 校验工具声明按名称排序输出
+// （map 迭代顺序随机会导致每次请求的工具声明顺序不确定）。
+func TestRegistry_ParamsSorted(t *testing.T) {
+	reg := NewRegistry()
+	for _, name := range []string{"zeta", "alpha", "mid"} { // 逆序注册
+		if err := reg.Add(&namedTool{name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	params := reg.Params()
+	if len(params) != 3 {
+		t.Fatalf("参数数量 = %d", len(params))
+	}
+	want := []string{"alpha", "mid", "zeta"}
+	for i, p := range params {
+		if p.Name != want[i] {
+			t.Errorf("Params[%d].Name = %q, 期望 %q", i, p.Name, want[i])
+		}
 	}
 }

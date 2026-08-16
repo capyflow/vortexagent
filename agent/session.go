@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"strconv"
 	"time"
 
 	"github.com/capyflow/vortexagent/llm"
@@ -19,14 +22,25 @@ type Session struct {
 }
 
 // NewSession 创建一个新会话。
+//
+// ID 由秒级时间戳 + 随机后缀组成，避免同一秒内创建多个会话时 ID 冲突。
 func NewSession(model string) *Session {
 	now := time.Now()
 	return &Session{
-		ID:        now.Format("20060102-150405"),
+		ID:        now.Format("20060102-150405") + "-" + shortID(),
 		Model:     model,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+}
+
+// shortID 生成 4 字节十六进制随机串；crypto/rand 失败时退化为纳秒时间戳。
+func shortID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Add 追加一条消息并更新时间戳。
@@ -55,5 +69,18 @@ func (s *Session) Trim(n int) {
 		return
 	}
 	s.History = s.History[len(s.History)-n:]
+	s.UpdatedAt = time.Now()
+}
+
+// Rollback 回滚历史到前 n 条（n <= 0 时清空）。
+//
+// 用于 Ask 失败时丢弃未完成轮次残留的 user/assistant/tool 消息，
+// 避免下一次提问携带上一次未回答的问题。
+func (s *Session) Rollback(n int) {
+	if n <= 0 {
+		s.History = nil
+	} else if n < len(s.History) {
+		s.History = s.History[:n]
+	}
 	s.UpdatedAt = time.Now()
 }

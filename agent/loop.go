@@ -71,25 +71,38 @@ func New(opts Options) *Agent {
 //  3. 若回复含工具调用 → 逐个执行并把结果追加为 tool 消息，回到第 2 步
 //  4. 无工具调用 → 返回文本回答
 func (a *Agent) Ask(ctx context.Context, session *Session, userInput string) (string, error) {
+	// 记录追加前的历史长度：任何失败路径都回滚到这里，
+	// 避免未回答的问题与半截工具轮次残留在历史中。
+	baseLen := len(session.Messages())
 	session.Add(llm.NewTextMessage(llm.RoleUser, userInput))
 
 	for iter := 1; iter <= a.maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
+			session.Rollback(baseLen)
 			return "", err
 		}
 
 		resp, err := a.chat(ctx, session)
 		if err != nil {
+			session.Rollback(baseLen)
 			return "", fmt.Errorf("vagent: 第 %d 轮调用失败: %w", iter, err)
 		}
 		session.Add(resp.Message)
 
 		if len(resp.Message.ToolCalls) == 0 {
-			return textOf(resp.Message), nil
+			answer := textOf(resp.Message)
+			if strings.TrimSpace(answer) == "" {
+				// 模型只输出了思考内容（如 max_tokens 耗尽）或什么都没输出：
+				// 视为失败并回滚，避免用户看到空回答。
+				session.Rollback(baseLen)
+				return "", fmt.Errorf("vagent: 模型未返回任何文本内容")
+			}
+			return answer, nil
 		}
 
 		for _, call := range resp.Message.ToolCalls {
 			if err := ctx.Err(); err != nil {
+				session.Rollback(baseLen)
 				return "", err
 			}
 			result, err := a.execTool(ctx, call)
@@ -99,6 +112,7 @@ func (a *Agent) Ask(ctx context.Context, session *Session, userInput string) (st
 			session.Add(llm.NewToolResultMessage(call.ID, result))
 		}
 	}
+	session.Rollback(baseLen)
 	return "", fmt.Errorf("vagent: 工具调用超过 %d 轮仍未结束", a.maxIter)
 }
 

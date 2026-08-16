@@ -230,6 +230,49 @@ func TestSearch_emptyQuery(t *testing.T) {
 	}
 }
 
+// TestSearch_multiTokenQuery 验证多关键词检索：所有词在同一行出现才算命中，
+// 且大小写不敏感。
+func TestSearch_multiTokenQuery(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "doc.md"),
+		"Vortex 是一个文档助手\nAgent 循环调度工具\nVortex agent 支持工具调用\n")
+
+	// "vortex agent"：只有第 3 行同时包含两个词。
+	results, err := NewKB([]string{root}).Search(context.Background(), "vortex agent", 5)
+	if err != nil {
+		t.Fatalf("Search 返回错误: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("期望 1 条结果，实际 %d 条: %+v", len(results), results)
+	}
+	if results[0].Line != 3 {
+		t.Errorf("期望命中第 3 行，实际第 %d 行", results[0].Line)
+	}
+
+	// 大小写不敏感仍然成立。
+	results, err = NewKB([]string{root}).Search(context.Background(), "AGENT VORTEX", 5)
+	if err != nil {
+		t.Fatalf("Search 返回错误: %v", err)
+	}
+	if len(results) != 1 || results[0].Line != 3 {
+		t.Errorf("多关键词大小写不敏感失败: %+v", results)
+	}
+}
+
+// TestSearch_limitHardCap 验证 Search 的 limit 硬上限（防模型传超大 limit 撑爆上下文）。
+func TestSearch_limitHardCap(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "many.md"), strings.Repeat("命中行\n", 100))
+
+	results, err := NewKB([]string{root}).Search(context.Background(), "命中", 9999)
+	if err != nil {
+		t.Fatalf("Search 返回错误: %v", err)
+	}
+	if len(results) != MaxSearchResults {
+		t.Errorf("limit 应被钳制到 %d，实际 %d", MaxSearchResults, len(results))
+	}
+}
+
 // TestSearch_canceledContext 验证 ctx 取消时提前退出。
 func TestSearch_canceledContext(t *testing.T) {
 	root := t.TempDir()
