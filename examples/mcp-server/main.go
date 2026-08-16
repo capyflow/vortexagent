@@ -1,4 +1,5 @@
-// Command mcp-server 是一个示例 MCP server，演示如何为 vortex 编写自定义工具。
+// Command mcp-server 是一个示例 MCP server，演示如何为任何基于本框架的
+// agent 编写自定义工具（MCP 是框架的"用户自定义功能"入口）。
 //
 // 运行方式（在仓库根目录）：
 //
@@ -59,7 +60,7 @@ func main() {
 		},
 	)
 
-	// 通过 stdio 对外服务（vortex 的 MCP 客户端会以子进程方式拉起本程序）。
+	// 通过 stdio 对外服务（框架的 MCP 客户端会以子进程方式拉起本程序）。
 	if err := server.ServeStdio(srv); err != nil {
 		fmt.Fprintf(os.Stderr, "serve stdio: %v\n", err)
 	}

@@ -235,7 +235,7 @@ func TestSearch_emptyQuery(t *testing.T) {
 func TestSearch_multiTokenQuery(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "doc.md"),
-		"Vortex 是一个文档助手\nAgent 循环调度工具\nVortex agent 支持工具调用\n")
+		"Vortex 是一个通用框架\nAgent 循环调度工具\nVortex agent 支持工具调用\n")
 
 	// "vortex agent"：只有第 3 行同时包含两个词。
 	results, err := NewKB([]string{root}).Search(context.Background(), "vortex agent", 5)

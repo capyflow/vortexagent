@@ -1,4 +1,4 @@
-// Package vllm 提供统一的 LLM 服务接口，屏蔽不同厂商（OpenAI 兼容 / Anthropic / Gemini）的协议差异。
+// Package llm 提供统一的 LLM 服务接口，屏蔽不同厂商（OpenAI 兼容 / Anthropic / Gemini）的协议差异。
 //
 // 设计继承自旧版 llm_protocol.go，并演进为支持多内容类型（文本/图片/思考）与工具调用（Tool Calling）。
 // 对应 pi 项目中 packages/ai 的定位。
@@ -131,7 +131,7 @@ type Provider interface {
 
 // ProviderOptions 是各 provider 构造函数共有的配置项。
 //
-// 所有 provider 都放在 vllm 这一个包里，为避免每个文件重复定义 Option 类型
+// 所有 provider 都放在 llm 这一个包里，为避免每个文件重复定义 Option 类型
 // 造成命名冲突，统一使用本类型。
 type ProviderOptions struct {
 	BaseURL        string       // 服务地址，空则使用默认

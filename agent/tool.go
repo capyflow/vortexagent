@@ -1,5 +1,6 @@
-// Package vagent 提供 Agent 运行时：LLM 与工具的循环调度、会话管理。
-// 对应 pi 项目中 packages/agent 的定位。
+// 本文件实现工具系统：Tool 接口（agent 能力的来源）与 Registry 注册表
+// （名字 → 工具的映射，重名保护、确定性排序）。领域能力全部来自工具，
+// 框架本身不内置任何业务工具。
 package agent
 
 import (
@@ -38,14 +39,14 @@ func NewRegistry() *Registry {
 // Add 注册工具，重名时返回错误。
 func (r *Registry) Add(t Tool) error {
 	if t == nil {
-		return fmt.Errorf("vagent: 不能注册空工具")
+		return fmt.Errorf("agent: 不能注册空工具")
 	}
 	name := t.Name()
 	if name == "" {
-		return fmt.Errorf("vagent: 工具名不能为空")
+		return fmt.Errorf("agent: 工具名不能为空")
 	}
 	if _, dup := r.tools[name]; dup {
-		return fmt.Errorf("vagent: 工具 %q 已存在", name)
+		return fmt.Errorf("agent: 工具 %q 已存在", name)
 	}
 	r.tools[name] = t
 	return nil
@@ -89,7 +90,7 @@ func (r *Registry) Params() []llm.ToolParam {
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (string, error) {
 	t, ok := r.tools[name]
 	if !ok {
-		return "", fmt.Errorf("vagent: 未知工具 %q", name)
+		return "", fmt.Errorf("agent: 未知工具 %q", name)
 	}
 	return t.Call(ctx, args)
 }

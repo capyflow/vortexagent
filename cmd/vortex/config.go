@@ -27,6 +27,10 @@ type Config struct {
 
 	// SystemPrompt 自定义系统提示词（可选）
 	SystemPrompt string `json:"systemPrompt"`
+
+	// SessionFile 会话持久化文件路径（可选），非空时启动自动恢复最近会话，
+	// 每轮对话后自动保存（继续上次对话）
+	SessionFile string `json:"sessionFile"`
 }
 
 // MCPServerConfig 描述一个外部 MCP server 的启动方式。

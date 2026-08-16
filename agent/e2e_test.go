@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/capyflow/vortexagent/knowledge"
 	"github.com/capyflow/vortexagent/llm"
+	"github.com/capyflow/vortexagent/tools/knowledge"
 )
 
 // TestE2E_FullChain 端到端验证：OpenAI 兼容 provider + 知识库工具 + agent 循环。
@@ -27,7 +27,7 @@ func TestE2E_FullChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	docPath := filepath.Join(docs, "vortex.md")
-	docContent := "Vortex 是一个基于 Go 的智能文档助手，支持 MCP 自定义工具。"
+	docContent := "Vortex 是一个基于 Go 的通用 agent 框架，支持 MCP 自定义工具。"
 	if err := os.WriteFile(docPath, []byte(docContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestE2E_FullChain(t *testing.T) {
 		t.Fatalf("Ask 失败: %v", err)
 	}
 	// 工具结果内容应被模型基于知识库的回答承载
-	if !strings.Contains(answer, "智能文档助手") {
+	if !strings.Contains(answer, "通用 agent 框架") {
 		t.Errorf("回答应包含知识库检索内容，实际: %s", answer)
 	}
 	if !strings.Contains(answer, "MCP") {

@@ -19,5 +19,6 @@
       "env": {}
     }
   ],
-  "systemPrompt": ""
+  "systemPrompt": "",
+  "sessionFile": "./vortex-sessions.json"
 }

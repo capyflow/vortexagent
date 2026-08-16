@@ -1,4 +1,8 @@
-// Command vortex 是智能文档 agent 的 CLI 入口。
+// Command vortex 是基于本框架的参考 CLI（reference app）：一个通用 REPL agent。
+//
+// 它演示了如何用框架组装一个完整的 agent 应用：配置驱动、可选扩展
+// （知识库 / MCP 工具）、可选会话持久化（重启后继续上次对话）。
+// 你自己的应用可以直接以库的方式使用框架（见 examples/ 下的最小示例）。
 //
 // 交互模式：输入问题回车提问，支持以下斜杠命令：
 //
@@ -18,8 +22,8 @@ import (
 	"strings"
 
 	"github.com/capyflow/vortexagent/agent"
-	"github.com/capyflow/vortexagent/knowledge"
 	"github.com/capyflow/vortexagent/llm"
+	"github.com/capyflow/vortexagent/tools/knowledge"
 	"github.com/capyflow/vortexagent/tools/mcp"
 )
 
@@ -102,7 +106,27 @@ func main() {
 		}
 	}()
 
-	// 3. 创建 agent 并进入交互循环
+	// 3. 会话：配置了 sessionFile 时启用 JSON 持久化，
+	// 启动时自动恢复最近一次会话（继续上次对话），每轮 Ask 后由 agent 自动保存。
+	session := agent.NewSession(cfg.Provider.Model)
+	var store agent.SessionStore
+	if cfg.SessionFile != "" {
+		jsonStore, jerr := agent.NewJSONSessionStore(cfg.SessionFile)
+		if jerr != nil {
+			fmt.Fprintln(os.Stderr, "错误:", jerr)
+			os.Exit(1)
+		}
+		store = jsonStore
+		prev, lerr := jsonStore.LoadLatest(ctx)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "警告: 恢复会话失败: %v\n", lerr)
+		} else if prev != nil {
+			session = prev
+			fmt.Printf("已恢复上次会话（%d 条历史）\n", len(session.Messages()))
+		}
+	}
+
+	// 4. 创建 agent 并进入交互循环
 	ag := agent.New(agent.Options{
 		Provider:     provider,
 		Registry:     registry,
@@ -110,6 +134,7 @@ func main() {
 		Thinking:     cfg.Provider.Thinking,
 		MaxTokens:    cfg.Provider.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
+		Store:        store,
 		OnDelta: func(d llm.Delta) {
 			if d.Thinking != "" {
 				fmt.Fprint(os.Stderr, d.Thinking)
@@ -118,9 +143,8 @@ func main() {
 			fmt.Print(d.Text)
 		},
 	})
-	session := agent.NewSession(cfg.Provider.Model)
 
-	fmt.Printf("vortex 文档 agent 已启动（provider=%s, model=%s, 工具: %s）\n",
+	fmt.Printf("vortex 通用 agent 已启动（provider=%s, model=%s, 工具: %s）\n",
 		provider.Name(), modelName(cfg), strings.Join(registry.Names(), ", "))
 	fmt.Println("输入问题开始对话，/help 查看命令。")
 

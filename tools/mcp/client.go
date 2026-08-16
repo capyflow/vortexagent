@@ -24,7 +24,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	mcp "github.com/mark3labs/mcp-go/mcp"
 
-	vllm "github.com/capyflow/vortexagent/llm"
+	"github.com/capyflow/vortexagent/llm"
 )
 
 // handshakeTimeout 是 initialize 握手的最长等待时间；期间 server 无响应即报错。
@@ -228,10 +228,10 @@ func concatContent(contents []mcp.Content) string {
 
 // ToToolParams 将 MCP 工具列表转换为 LLM 层统一使用的工具声明
 // （llm.ToolParam），供 Chat 请求暴露给模型。
-func ToToolParams(tools []*Tool) []vllm.ToolParam {
-	params := make([]vllm.ToolParam, 0, len(tools))
+func ToToolParams(tools []*Tool) []llm.ToolParam {
+	params := make([]llm.ToolParam, 0, len(tools))
 	for _, t := range tools {
-		params = append(params, vllm.ToolParam{
+		params = append(params, llm.ToolParam{
 			Name:        t.name,
 			Description: t.description,
 			Schema:      t.schema,

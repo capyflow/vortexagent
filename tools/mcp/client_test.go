@@ -13,7 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	vllm "github.com/capyflow/vortexagent/llm"
+	"github.com/capyflow/vortexagent/llm"
 )
 
 // connectCtx 返回一个 30 秒超时的上下文，避免测试挂起。
@@ -261,7 +261,7 @@ func TestToToolParams(t *testing.T) {
 	if len(params) != 3 {
 		t.Fatalf("ToToolParams() 长度 = %d", len(params))
 	}
-	byName := make(map[string]vllm.ToolParam, len(params))
+	byName := make(map[string]llm.ToolParam, len(params))
 	for _, p := range params {
 		byName[p.Name] = p
 	}
