@@ -1,0 +1,16 @@
+{
+  "provider": {
+    "name": "openai",
+    "apiKeyEnv": "OPENCODE_API_KEY",
+    "baseURL": "https://opencode.ai/zen/go/v1",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 0,
+    "temperature": null,
+    "thinking": false
+  },
+  "knowledge": [
+    "."
+  ],
+  "mcpServers": [],
+  "systemPrompt": ""
+}

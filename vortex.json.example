@@ -1,0 +1,23 @@
+{
+  "provider": {
+    "name": "openai",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "baseURL": "",
+    "model": "deepseek-chat",
+    "maxTokens": 0,
+    "temperature": null,
+    "thinking": false
+  },
+  "knowledge": [
+    "./docs"
+  ],
+  "mcpServers": [
+    {
+      "name": "example-tools",
+      "command": "go",
+      "args": ["run", "./examples/mcp-server"],
+      "env": {}
+    }
+  ],
+  "systemPrompt": ""
+}
