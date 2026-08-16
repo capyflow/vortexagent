@@ -1,3 +1,6 @@
 .vscode/
-
-**/logs/**
+**/logs/
+.gocache/
+.gomodcache/
+.env
+.omo/
