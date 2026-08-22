@@ -191,6 +191,7 @@ func main() {
 	}
 
 	// 4. 创建 agent 并进入交互循环
+	var firstDelta bool = true
 	ag := agent.New(agent.Options{
 		Provider:     provider,
 		Registry:     registry,
@@ -203,6 +204,10 @@ func main() {
 			if d.Thinking != "" {
 				fmt.Fprintf(os.Stderr, "\033[90m%s\033[0m", d.Thinking)
 				return
+			}
+			if firstDelta {
+				fmt.Println()
+				firstDelta = false
 			}
 			fmt.Print(d.Text)
 		},
