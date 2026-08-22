@@ -6,30 +6,23 @@ import (
 	"os"
 )
 
-// Config 是 vortex 的顶层配置，从 JSON 文件加载（默认 ./vortex.json，可用 -config 覆盖）。
+// Config 是 vortex 的顶层配置，从 JSON 文件加载（默认 ~/.vortex/agent.json，可用 -config 覆盖）。
 type Config struct {
-	// Provider 配置（name 支持 openai / anthropic / gemini）
 	Provider struct {
 		Name        string   `json:"name"`
-		APIKeyEnv   string   `json:"apiKeyEnv"`   // 存放 API 密钥的环境变量名，空则按 provider 默认查找
-		BaseURL     string   `json:"baseURL"`     // 自定义服务地址（可选）
-		Model       string   `json:"model"`       // 模型名称（可选）
-		MaxTokens   int      `json:"maxTokens"`   // 最大输出 token（可选）
-		Temperature *float64 `json:"temperature"` // 采样温度（可选）
-		Thinking    bool     `json:"thinking"`    // 是否启用思考模式（可选）
+		APIKey      string   `json:"apiKey,omitempty"`
+		APIKeyEnv   string   `json:"apiKeyEnv,omitempty"`
+		BaseURL     string   `json:"baseURL"`
+		Model       string   `json:"model"`
+		MaxTokens   int      `json:"maxTokens,omitempty"`
+		Temperature *float64 `json:"temperature,omitempty"`
+		Thinking    bool     `json:"thinking,omitempty"`
 	} `json:"provider"`
 
-	// Knowledge 是知识库根目录列表（可选）
-	Knowledge []string `json:"knowledge"`
-
-	// MCPServers 是 MCP server 列表，每个 server 的工具会自动注册给 agent（可选）
-	MCPServers []MCPServerConfig `json:"mcpServers"`
-
-	// SystemPrompt 自定义系统提示词（可选）
-	SystemPrompt string `json:"systemPrompt"`
-
-	// Session 会话存储配置（可选）
-	Session SessionConfig `json:"session"`
+	Knowledge    []string          `json:"knowledge,omitempty"`
+	MCPServers   []MCPServerConfig `json:"mcpServers,omitempty"`
+	SystemPrompt string            `json:"systemPrompt,omitempty"`
+	Session      SessionConfig     `json:"session"`
 }
 
 // SessionConfig 会话存储配置。

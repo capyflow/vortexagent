@@ -72,13 +72,19 @@ func main() {
 	}
 
 	// 1. 创建 LLM provider
-	apiKey := os.Getenv(cfg.Provider.APIKeyEnv)
-	if apiKey == "" {
+	var apiKey string
+	if cfg.Provider.APIKey != "" {
+		apiKey = cfg.Provider.APIKey
+	} else if cfg.Provider.APIKeyEnv != "" {
+		apiKey = os.Getenv(cfg.Provider.APIKeyEnv)
+		if apiKey == "" {
+			apiKey = os.Getenv(defaultAPIKeyEnv(cfg.Provider.Name))
+		}
+	} else {
 		apiKey = os.Getenv(defaultAPIKeyEnv(cfg.Provider.Name))
 	}
 	if apiKey == "" {
-		fmt.Fprintf(os.Stderr, "错误: 未找到 %s 的 API 密钥（设置环境变量 %s）\n",
-			cfg.Provider.Name, defaultAPIKeyEnv(cfg.Provider.Name))
+		fmt.Fprintln(os.Stderr, "错误: 未找到 API 密钥，请在配置文件中填写 apiKey 或设置环境变量")
 		os.Exit(1)
 	}
 	provider, err := llm.NewProvider(llm.ProviderConfig{
