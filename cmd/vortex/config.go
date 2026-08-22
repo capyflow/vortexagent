@@ -28,9 +28,27 @@ type Config struct {
 	// SystemPrompt 自定义系统提示词（可选）
 	SystemPrompt string `json:"systemPrompt"`
 
-	// SessionFile 会话持久化文件路径（可选），非空时启动自动恢复最近会话，
-	// 每轮对话后自动保存（继续上次对话）
-	SessionFile string `json:"sessionFile"`
+	// Session 会话存储配置（可选）
+	Session SessionConfig `json:"session"`
+}
+
+// SessionConfig 会话存储配置。
+type SessionConfig struct {
+	// Type 存储类型：memory / json / postgres（默认 memory）
+	Type string `json:"type"`
+
+	// JSON 配置（Type=json 时使用）
+	File string `json:"file"` // 会话文件路径
+
+	// Postgres 配置（Type=postgres 时使用）
+	Postgres *PostgresConfig `json:"postgres,omitempty"`
+}
+
+// PostgresConfig PostgreSQL 连接配置。
+type PostgresConfig struct {
+	DSN         string `json:"dsn"`         // 连接字符串，如 "postgres://user:pass@localhost:5432/vortex?sslmode=disable"
+	LockTTL     int    `json:"lockTtl"`     // 锁过期时间（秒），默认 30
+	LockRenewal int    `json:"lockRenewal"` // 续期间隔（秒），默认 10
 }
 
 // MCPServerConfig 描述一个外部 MCP server 的启动方式。

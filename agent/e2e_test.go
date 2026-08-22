@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 )
@@ -76,7 +77,7 @@ func TestE2E_FullChain(t *testing.T) {
 	}
 
 	ag := New(Options{Provider: provider, Registry: reg, Model: "fake-model"})
-	session := NewSession("fake-model")
+	session := sessionstore.NewSession("fake-model")
 
 	answer, err := ag.Ask(context.Background(), session, "Vortex 是什么？")
 	if err != nil {

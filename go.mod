@@ -4,7 +4,10 @@ go 1.23.0
 
 toolchain go1.23.3
 
-require github.com/mark3labs/mcp-go v0.44.1
+require (
+	github.com/lib/pq v1.12.3
+	github.com/mark3labs/mcp-go v0.44.1
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

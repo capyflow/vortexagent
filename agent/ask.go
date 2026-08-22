@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 )
 
@@ -20,7 +21,7 @@ import (
 //
 // 无论成功失败，退出前都会：触发 OnError / OnFinish 钩子（见 Hooks）、
 // 在配置了 Store 时自动保存会话快照。失败时历史回滚到提问前。
-func (a *Agent) Ask(ctx context.Context, session *Session, userInput string) (answer string, err error) {
+func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInput string) (answer string, err error) {
 	// 兜底：任何路径（成功或失败）退出前自动保存会话并触发错误钩子。
 	defer func() {
 		if a.store != nil {
@@ -88,7 +89,7 @@ func (a *Agent) Ask(ctx context.Context, session *Session, userInput string) (an
 }
 
 // chat 调用 LLM，并把流式增量透传给 onDelta。
-func (a *Agent) chat(ctx context.Context, session *Session) (*llm.ChatResponse, error) {
+func (a *Agent) chat(ctx context.Context, session *sessionstore.Session) (*llm.ChatResponse, error) {
 	req := &llm.ChatRequest{
 		Model:    a.model,
 		Messages: a.withSystem(session.Messages()),

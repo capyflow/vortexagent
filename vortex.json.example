@@ -20,5 +20,8 @@
     }
   ],
   "systemPrompt": "",
-  "sessionFile": "./vortex-sessions.json"
+  "session": {
+    "type": "json",
+    "file": "~/.vortex/sessions.json"
+  }
 }

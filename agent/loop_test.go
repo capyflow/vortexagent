@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 )
 
@@ -70,7 +71,7 @@ func (t *echoTool) Call(_ context.Context, args map[string]any) (string, error) 
 func TestAsk_SimpleAnswer(t *testing.T) {
 	fp := &fakeProvider{name: "fake", maxRounds: 0}
 	ag := New(Options{Provider: fp, Model: "m1"})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	ans, err := ag.Ask(context.Background(), session, "你好")
 	if err != nil {
@@ -95,7 +96,7 @@ func TestAsk_ToolLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := New(Options{Provider: fp, Registry: reg, Model: "m1"})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	ans, err := ag.Ask(context.Background(), session, "帮我查一下")
 	if err != nil {
@@ -140,7 +141,7 @@ func TestAsk_ToolLoopExceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := New(Options{Provider: fp, Registry: reg, Model: "m1", MaxIterations: 3})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	_, err := ag.Ask(context.Background(), session, "无限循环测试")
 	if err == nil {
@@ -154,7 +155,7 @@ func TestAsk_ToolLoopExceeded(t *testing.T) {
 func TestAsk_UnknownTool(t *testing.T) {
 	fp := &fakeProvider{name: "fake", toolName: "no-such-tool", maxRounds: 1}
 	ag := New(Options{Provider: fp, Registry: NewRegistry(), Model: "m1", MaxIterations: 3})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	// 未知工具应返回错误文本而非 panic，且循环继续
 	ans, err := ag.Ask(context.Background(), session, "测试未知工具")
@@ -205,7 +206,7 @@ func (f *emptyProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) 
 // TestAsk_EmptyAnswer 校验模型未返回文本内容时报错并回滚历史。
 func TestAsk_EmptyAnswer(t *testing.T) {
 	ag := New(Options{Provider: &emptyProvider{name: "empty"}, Model: "m1"})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	_, err := ag.Ask(context.Background(), session, "问题")
 	if err == nil {
@@ -220,7 +221,7 @@ func TestAsk_EmptyAnswer(t *testing.T) {
 // 未回答的问题与半截工具轮次不会残留在会话中。
 func TestAsk_RollsBackHistoryOnError(t *testing.T) {
 	ag := New(Options{Provider: &errProvider{name: "err"}, Model: "m1"})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 	session.Add(llm.NewTextMessage(llm.RoleUser, "之前的问题"))
 
 	_, err := ag.Ask(context.Background(), session, "新问题")

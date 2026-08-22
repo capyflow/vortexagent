@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/capyflow/vortexagent/agent"
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 )
@@ -66,7 +67,7 @@ func main() {
 		OnDelta: func(d llm.Delta) { fmt.Print(d.Text) },
 	})
 
-	session := agent.NewSession("default")
+	session := sessionstore.NewSession("default")
 	answer, err := ag.Ask(context.Background(), session, os.Args[1])
 	fmt.Println()
 	if err != nil {

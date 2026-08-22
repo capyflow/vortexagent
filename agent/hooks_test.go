@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 )
 
@@ -26,7 +27,7 @@ func TestHooks_SimpleAnswer(t *testing.T) {
 		},
 	})
 
-	ans, err := ag.Ask(context.Background(), NewSession("m1"), "你好")
+	ans, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "你好")
 	if err != nil {
 		t.Fatalf("Ask 失败: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestHooks_ToolRoundTrip(t *testing.T) {
 		},
 	})
 
-	if _, err := ag.Ask(context.Background(), NewSession("m1"), "查一下"); err != nil {
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "查一下"); err != nil {
 		t.Fatalf("Ask 失败: %v", err)
 	}
 	// 2 轮 LLM 回复：工具调用轮 + 最终回答轮
@@ -107,7 +108,7 @@ func TestHooks_BeforeToolCallBlocks(t *testing.T) {
 			},
 		},
 	})
-	session := NewSession("m1")
+	session := sessionstore.NewSession("m1")
 
 	ans, err := ag.Ask(context.Background(), session, "测试拦截")
 	if err != nil {
@@ -140,7 +141,7 @@ func TestHooks_OnError(t *testing.T) {
 		},
 	})
 
-	if _, err := ag.Ask(context.Background(), NewSession("m1"), "问题"); err == nil {
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "问题"); err == nil {
 		t.Fatal("期望 Ask 报错")
 	}
 	if len(gotErr) != 1 {
@@ -156,7 +157,7 @@ func TestHooks_Nil(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := New(Options{Provider: fp, Registry: reg, Model: "m1"})
-	if _, err := ag.Ask(context.Background(), NewSession("m1"), "无钩子测试"); err != nil {
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "无钩子测试"); err != nil {
 		t.Fatalf("Ask 失败: %v", err)
 	}
 }

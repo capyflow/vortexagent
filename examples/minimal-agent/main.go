@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/capyflow/vortexagent/agent"
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 )
 
@@ -73,7 +74,7 @@ func main() {
 	})
 
 	// 4. 提问
-	session := agent.NewSession("default")
+	session := sessionstore.NewSession("default")
 	answer, err := ag.Ask(context.Background(), session, os.Args[1])
 	fmt.Println()
 	if err != nil {

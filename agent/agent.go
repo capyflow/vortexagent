@@ -13,32 +13,21 @@
 package agent
 
 import (
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 )
 
-// Options 是创建 Agent 的配置。
 type Options struct {
-	Provider llm.Provider // LLM 服务（必填）
-	Registry *Registry    // 工具注册表（可空，空表示不支持工具）
-	Model    string       // 模型名称，空使用 provider 默认
-	Thinking bool         // 是否启用思考模式
-	// MaxTokens 最大输出 token，0 使用默认。
-	MaxTokens int
-
-	// MaxIterations 限制单次 Ask 中工具调用循环的最大轮数（默认 10）。
+	Provider      llm.Provider
+	Registry      *Registry
+	Model         string
+	Thinking      bool
+	MaxTokens     int
 	MaxIterations int
-
-	// SystemPrompt 系统提示词，空使用 DefaultSystemPrompt。
-	SystemPrompt string
-
-	// OnDelta 流式增量回调（用于实时展示），可空。
-	OnDelta func(llm.Delta)
-
-	// Hooks 生命周期钩子（日志、遥测、权限拦截等），可空。
-	Hooks *Hooks
-
-	// Store 会话存储，非 nil 时每次 Ask 结束（成功或失败）都会自动保存会话。
-	Store SessionStore
+	SystemPrompt  string
+	OnDelta       func(llm.Delta)
+	Hooks         *Hooks
+	Store         sessionstore.Store
 }
 
 // DefaultSystemPrompt 默认系统提示词。
@@ -56,7 +45,7 @@ type Agent struct {
 	systemPrompt string
 	onDelta      func(llm.Delta)
 	hooks        *Hooks
-	store        SessionStore
+	store        sessionstore.Store
 }
 
 // New 创建 Agent。

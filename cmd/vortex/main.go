@@ -15,21 +15,47 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/capyflow/vortexagent/agent"
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 	"github.com/capyflow/vortexagent/tools/mcp"
 )
 
 func main() {
-	configPath := flag.String("config", "vortex.json", "配置文件路径")
+	configPath := flag.String("config", "", "配置文件路径（默认 ~/.vortex/agent.json）")
 	flag.Parse()
+
+	if *configPath == "" {
+		home, _ := os.UserHomeDir()
+		*configPath = filepath.Join(home, ".vortex", "agent.json")
+	}
+
+	configDir := filepath.Dir(*configPath)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "错误: 创建配置目录失败:", err)
+		os.Exit(1)
+	}
+
+	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
+		cfg := interactiveSetup()
+		if err := saveConfig(*configPath, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "错误: 保存配置失败:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("配置已保存到 %s\n", *configPath)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -106,12 +132,41 @@ func main() {
 		}
 	}()
 
-	// 3. 会话：配置了 sessionFile 时启用 JSON 持久化，
-	// 启动时自动恢复最近一次会话（继续上次对话），每轮 Ask 后由 agent 自动保存。
-	session := agent.NewSession(cfg.Provider.Model)
-	var store agent.SessionStore
-	if cfg.SessionFile != "" {
-		jsonStore, jerr := agent.NewJSONSessionStore(cfg.SessionFile)
+	// 3. 会话存储
+	session := sessionstore.NewSession(cfg.Provider.Model)
+	var store sessionstore.Store
+	var lockManager *sessionstore.LockManager
+
+	switch cfg.Session.Type {
+	case "postgres":
+		if cfg.Session.Postgres == nil {
+			fmt.Fprintln(os.Stderr, "错误: session.type=postgres 但未配置 session.postgres")
+			os.Exit(1)
+		}
+		pgStore, perr := sessionstore.NewPostgres(cfg.Session.Postgres.DSN, generateDeviceID())
+		if perr != nil {
+			fmt.Fprintln(os.Stderr, "错误:", perr)
+			os.Exit(1)
+		}
+		store = pgStore
+
+		ttl := 30 * time.Second
+		if cfg.Session.Postgres.LockTTL > 0 {
+			ttl = time.Duration(cfg.Session.Postgres.LockTTL) * time.Second
+		}
+		renewal := 10 * time.Second
+		if cfg.Session.Postgres.LockRenewal > 0 {
+			renewal = time.Duration(cfg.Session.Postgres.LockRenewal) * time.Second
+		}
+		lockManager = sessionstore.NewLockManager(pgStore, session.ID, ttl, renewal)
+
+		fmt.Printf("已连接 PostgreSQL（锁 TTL: %v, 续期间隔: %v）\n", ttl, renewal)
+	case "json":
+		if cfg.Session.File == "" {
+			fmt.Fprintln(os.Stderr, "错误: session.type=json 但未配置 session.file")
+			os.Exit(1)
+		}
+		jsonStore, jerr := sessionstore.NewJSON(cfg.Session.File)
 		if jerr != nil {
 			fmt.Fprintln(os.Stderr, "错误:", jerr)
 			os.Exit(1)
@@ -124,6 +179,8 @@ func main() {
 			session = prev
 			fmt.Printf("已恢复上次会话（%d 条历史）\n", len(session.Messages()))
 		}
+	default:
+		store = sessionstore.NewMemory()
 	}
 
 	// 4. 创建 agent 并进入交互循环
@@ -148,6 +205,23 @@ func main() {
 		provider.Name(), modelName(cfg), strings.Join(registry.Names(), ", "))
 	fmt.Println("输入问题开始对话，/help 查看命令。")
 
+	if lockManager != nil {
+		acquired, lerr := lockManager.Acquire(ctx)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "警告: 获取会话锁失败: %v\n", lerr)
+		} else if !acquired {
+			fmt.Println("警告: 会话已被其他设备锁定，当前为只读模式")
+		} else {
+			fmt.Println("已获取会话锁（自动续期中）")
+		}
+		defer func() {
+			if lockManager.IsHeld() {
+				lockManager.Release(context.Background())
+				fmt.Println("已释放会话锁")
+			}
+		}()
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	exit := false
@@ -167,7 +241,7 @@ func main() {
 		if line == "" {
 			continue
 		}
-		if handleCommand(line, session, registry, &exit) {
+		if handleCommand(line, session, store, registry, &exit) {
 			if exit {
 				break
 			}
@@ -187,15 +261,17 @@ func main() {
 }
 
 // handleCommand 处理斜杠命令，返回 (是否已处理, 是否退出)。
-func handleCommand(line string, session *agent.Session, registry *agent.Registry, exit *bool) bool {
-	switch line {
-	case "/exit", "/quit":
+func handleCommand(line string, session *sessionstore.Session, store sessionstore.Store, registry *agent.Registry, exit *bool) bool {
+	switch {
+	case line == "/exit" || line == "/quit":
 		*exit = true
 		return true
-	case "/help":
-		fmt.Println("命令: /help 帮助  /tools 工具列表  /clear 清空历史  /exit 退出")
+	case line == "/help":
+		fmt.Println("命令: /help 帮助  /tools 工具列表  /clear 清空历史")
+		fmt.Println("      /sessions 会话列表  /new 新建会话  /switch ID 切换会话  /delete ID 删除会话")
+		fmt.Println("      /exit 退出")
 		return true
-	case "/tools":
+	case line == "/tools":
 		if len(registry.Names()) == 0 {
 			fmt.Println("当前没有可用工具")
 			return true
@@ -205,12 +281,111 @@ func handleCommand(line string, session *agent.Session, registry *agent.Registry
 			fmt.Printf("  %s - %s\n", name, t.Description())
 		}
 		return true
-	case "/clear":
+	case line == "/clear":
 		session.Clear()
 		fmt.Println("会话历史已清空")
 		return true
+	case line == "/sessions":
+		handleSessions(session, store)
+		return true
+	case line == "/new":
+		handleNewSession(session, store)
+		return true
+	case strings.HasPrefix(line, "/switch "):
+		id := strings.TrimSpace(strings.TrimPrefix(line, "/switch"))
+		handleSwitchSession(session, store, id)
+		return true
+	case strings.HasPrefix(line, "/delete "):
+		id := strings.TrimSpace(strings.TrimPrefix(line, "/delete"))
+		handleDeleteSession(session, store, id)
+		return true
 	}
 	return false
+}
+
+// handleSessions 列出所有会话。
+func handleSessions(current *sessionstore.Session, store sessionstore.Store) {
+	if store == nil {
+		fmt.Println("未启用会话持久化（配置 sessionFile 才能管理多个会话）")
+		return
+	}
+	ctx := context.Background()
+	sessions, err := store.List(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取会话列表失败: %v\n", err)
+		return
+	}
+	if len(sessions) == 0 {
+		fmt.Println("暂无会话")
+		return
+	}
+	fmt.Printf("共 %d 个会话:\n", len(sessions))
+	for _, s := range sessions {
+		marker := "  "
+		if s.ID == current.ID {
+			marker = "→ "
+		}
+		fmt.Printf("%s%s  模型: %s  消息: %d  更新: %s\n",
+			marker, s.ID, s.Model, len(s.History),
+			s.UpdatedAt.Format("2006-01-02 15:04:05"))
+	}
+}
+
+// handleNewSession 创建新会话并切换。
+func handleNewSession(current *sessionstore.Session, store sessionstore.Store) {
+	newSess := sessionstore.NewSession(current.Model)
+	if store != nil {
+		if err := store.Save(context.Background(), newSess); err != nil {
+			fmt.Fprintf(os.Stderr, "保存新会话失败: %v\n", err)
+			return
+		}
+	}
+	*current = *newSess
+	fmt.Printf("已创建新会话: %s\n", current.ID)
+}
+
+// handleSwitchSession 切换到指定会话。
+func handleSwitchSession(current *sessionstore.Session, store sessionstore.Store, id string) {
+	if store == nil {
+		fmt.Println("未启用会话持久化")
+		return
+	}
+	if id == "" {
+		fmt.Println("用法: /switch <会话ID>")
+		return
+	}
+	sess, err := store.Load(context.Background(), id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "加载会话失败: %v\n", err)
+		return
+	}
+	if sess == nil {
+		fmt.Printf("会话不存在: %s\n", id)
+		return
+	}
+	*current = *sess
+	fmt.Printf("已切换到会话: %s（%d 条历史）\n", current.ID, len(current.History))
+}
+
+// handleDeleteSession 删除指定会话。
+func handleDeleteSession(current *sessionstore.Session, store sessionstore.Store, id string) {
+	if store == nil {
+		fmt.Println("未启用会话持久化")
+		return
+	}
+	if id == "" {
+		fmt.Println("用法: /delete <会话ID>")
+		return
+	}
+	if id == current.ID {
+		fmt.Println("不能删除当前会话，请先切换到其他会话")
+		return
+	}
+	if err := store.Delete(context.Background(), id); err != nil {
+		fmt.Fprintf(os.Stderr, "删除会话失败: %v\n", err)
+		return
+	}
+	fmt.Printf("已删除会话: %s\n", id)
 }
 
 // modelName 返回展示用的模型名。
@@ -219,4 +394,95 @@ func modelName(cfg *Config) string {
 		return cfg.Provider.Model
 	}
 	return "默认"
+}
+
+// generateDeviceID 生成唯一的设备标识符。
+func generateDeviceID() string {
+	hostname, _ := os.Hostname()
+	var b [4]byte
+	rand.Read(b[:])
+	return fmt.Sprintf("%s-%s", hostname, hex.EncodeToString(b[:]))
+}
+
+func interactiveSetup() *Config {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Println("=== Vortex Agent 配置向导 ===")
+	fmt.Println()
+
+	fmt.Println("选择 API 接口规范:")
+	fmt.Println("  1. OpenAI 兼容（适用于 DeepSeek/Qwen/智谱/Moonshot 等国内厂商）")
+	fmt.Println("  2. Anthropic 原生接口")
+	fmt.Println("  3. Gemini 原生接口")
+	fmt.Print("请输入 (1-3, 默认 1): ")
+	scanner.Scan()
+	providerChoice := strings.TrimSpace(scanner.Text())
+	if providerChoice == "" {
+		providerChoice = "1"
+	}
+
+	var providerName string
+	switch providerChoice {
+	case "2":
+		providerName = "anthropic"
+	case "3":
+		providerName = "gemini"
+	default:
+		providerName = "openai"
+	}
+
+	fmt.Printf("\n当前接口规范: %s\n", providerName)
+
+	var apiKeyEnv, model, baseURL string
+
+	for {
+		fmt.Print("\nAPI 密钥环境变量名 (默认 ")
+		fmt.Print(defaultAPIKeyEnv(providerName))
+		fmt.Print("): ")
+		scanner.Scan()
+		apiKeyEnv = strings.TrimSpace(scanner.Text())
+		if apiKeyEnv == "" {
+			apiKeyEnv = defaultAPIKeyEnv(providerName)
+		}
+
+		fmt.Print("\n模型名称: ")
+		scanner.Scan()
+		model = strings.TrimSpace(scanner.Text())
+
+		if providerName == "openai" {
+			fmt.Print("\nAPI 地址 (如 https://api.deepseek.com): ")
+		} else {
+			fmt.Print("\nAPI 地址: ")
+		}
+		scanner.Scan()
+		baseURL = strings.TrimSpace(scanner.Text())
+
+		if model == "" || baseURL == "" {
+			fmt.Println("\n错误: 模型名称和 API 地址不能为空，请重新填写")
+			continue
+		}
+
+		break
+	}
+
+	home, _ := os.UserHomeDir()
+	defaultSessionFile := filepath.Join(home, ".vortex", "sessions.json")
+
+	cfg := &Config{}
+	cfg.Provider.Name = providerName
+	cfg.Provider.APIKeyEnv = apiKeyEnv
+	cfg.Provider.Model = model
+	cfg.Provider.BaseURL = baseURL
+	cfg.Session.Type = "json"
+	cfg.Session.File = defaultSessionFile
+
+	return cfg
+}
+
+func saveConfig(path string, cfg *Config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
