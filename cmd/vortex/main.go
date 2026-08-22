@@ -166,7 +166,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "错误: session.type=json 但未配置 session.file")
 			os.Exit(1)
 		}
-		jsonStore, jerr := sessionstore.NewJSON(cfg.Session.File)
+		sessionFile := expandPath(cfg.Session.File)
+		jsonStore, jerr := sessionstore.NewJSON(sessionFile)
 		if jerr != nil {
 			fmt.Fprintln(os.Stderr, "错误:", jerr)
 			os.Exit(1)
@@ -402,6 +403,14 @@ func generateDeviceID() string {
 	var b [4]byte
 	rand.Read(b[:])
 	return fmt.Sprintf("%s-%s", hostname, hex.EncodeToString(b[:]))
+}
+
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
+	}
+	return path
 }
 
 func interactiveSetup() *Config {
