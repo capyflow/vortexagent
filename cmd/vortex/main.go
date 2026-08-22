@@ -201,7 +201,7 @@ func main() {
 		Store:        store,
 		OnDelta: func(d llm.Delta) {
 			if d.Thinking != "" {
-				fmt.Fprint(os.Stderr, d.Thinking)
+				fmt.Fprintf(os.Stderr, "\033[90m%s\033[0m", d.Thinking)
 				return
 			}
 			fmt.Print(d.Text)
