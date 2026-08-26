@@ -4,15 +4,28 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/capyflow/vortexagent/llm"
 )
 
+type OffloadedChunk struct {
+	ID        string         `json:"id"`
+	Summary   string         `json:"summary"`
+	MsgCount  int            `json:"msg_count"`
+	StartIdx  int            `json:"start_idx"` // 原始完整历史中的起始位置
+	EndIdx    int            `json:"end_idx"`   // 原始完整历史中的结束位置
+	CreatedAt time.Time      `json:"created_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
 type Session struct {
+	mu        sync.RWMutex
 	ID        string
 	Model     string
-	History   []llm.Message
+	History   []llm.Message    // 活跃区
+	Offloaded []OffloadedChunk // 卸载区（历史摘要）
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -36,20 +49,28 @@ func shortID() string {
 }
 
 func (s *Session) Add(m llm.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.History = append(s.History, m)
 	s.UpdatedAt = time.Now()
 }
 
 func (s *Session) Messages() []llm.Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.History
 }
 
 func (s *Session) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.History = nil
 	s.UpdatedAt = time.Now()
 }
 
 func (s *Session) Trim(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if n <= 0 || n >= len(s.History) {
 		if n <= 0 {
 			s.History = nil
@@ -61,10 +82,38 @@ func (s *Session) Trim(n int) {
 }
 
 func (s *Session) Rollback(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if n <= 0 {
 		s.History = nil
 	} else if n < len(s.History) {
 		s.History = s.History[:n]
 	}
 	s.UpdatedAt = time.Now()
+}
+
+func (s *Session) AddOffloaded(chunk OffloadedChunk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Offloaded = append(s.Offloaded, chunk)
+	s.UpdatedAt = time.Time{}
+}
+
+func (s *Session) GetOffloaded() []OffloadedChunk {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Offloaded
+}
+
+func (s *Session) ClearOffloaded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Offloaded = nil
+	s.UpdatedAt = time.Time{}
+}
+
+func (s *Session) OffloadedCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Offloaded)
 }

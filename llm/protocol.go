@@ -122,10 +122,8 @@ type Delta struct {
 // onDelta 非 nil 时按流式处理，收到的每个增量都会回调；无论是否流式，
 // 返回的 ChatResponse 都包含完整消息。onDelta 返回 error 时中止流。
 type Provider interface {
-	// Name 返回 provider 名称，如 "openai" / "anthropic" / "gemini"
 	Name() string
-
-	// Chat 发送一次对话请求并返回完整回复。
+	ContextWindow() int
 	Chat(ctx context.Context, req *ChatRequest, onDelta func(Delta) error) (*ChatResponse, error)
 }
 
@@ -137,6 +135,7 @@ type ProviderOptions struct {
 	BaseURL        string       // 服务地址，空则使用默认
 	HTTPClient     *http.Client // HTTP 客户端，nil 使用 http.DefaultClient
 	Model          string       // 模型名称，空则使用 provider 默认
+	ContextWindow  int          // 模型上下文窗口大小，0 则自动推断
 	MaxTokens      int          // 最大输出 token，0 使用默认（Anthropic 必填，默认 4096）
 	Temperature    *float64     // 采样温度，nil 使用模型默认
 	ThinkingBudget int          // 思考预算 token（Anthropic），>0 时启用思考模式
@@ -163,6 +162,11 @@ func WithModel(model string) ProviderOption {
 // WithMaxTokens 设置最大输出 token 数。
 func WithMaxTokens(n int) ProviderOption {
 	return func(o *ProviderOptions) { o.MaxTokens = n }
+}
+
+// WithContextWindow 设置模型上下文窗口大小。
+func WithContextWindow(n int) ProviderOption {
+	return func(o *ProviderOptions) { o.ContextWindow = n }
 }
 
 // WithTemperature 设置采样温度。

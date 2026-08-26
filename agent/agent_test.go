@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 	timetool "github.com/capyflow/vortexagent/tools/time"
 )
@@ -23,7 +24,7 @@ func Test_Ask(t *testing.T) {
 		Provider: provider,
 	})
 
-	answer, err := agent.Ask(ctx, &Session{}, "今天是几月几日")
+	answer, err := agent.Ask(ctx, &sessionstore.Session{}, "今天是几月几日")
 	if nil != err {
 		fmt.Printf("Ask|Error|%v", err)
 	} else {
@@ -48,7 +49,7 @@ func Test_AskWithTools(t *testing.T) {
 		Registry: registry,
 	})
 
-	answer, err := agent.Ask(ctx, &Session{}, "今天是几月几日")
+	answer, err := agent.Ask(ctx, &sessionstore.Session{}, "今天是几月几日")
 	if nil != err {
 		fmt.Printf("Ask|Error|%v", err)
 	} else {

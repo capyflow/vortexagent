@@ -27,9 +27,10 @@ type OpenAIProvider struct {
 	apiKey      string
 	baseURL     string
 	client      *http.Client
-	model       string
-	maxTokens   int
-	temperature *float64
+	model         string
+	maxTokens     int
+	temperature   *float64
+	contextWindow int
 }
 
 // NewOpenAIProvider 构造 OpenAI 兼容 provider。
@@ -47,18 +48,22 @@ func NewOpenAIProvider(apiKey string, opts ...ProviderOption) *OpenAIProvider {
 		client = http.DefaultClient
 	}
 	p := &OpenAIProvider{
-		apiKey:      apiKey,
-		baseURL:     strings.TrimSuffix(cfg.BaseURL, "/"),
-		client:      client,
-		model:       cfg.Model,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
+		apiKey:        apiKey,
+		baseURL:       strings.TrimSuffix(cfg.BaseURL, "/"),
+		client:        client,
+		model:         cfg.Model,
+		maxTokens:     cfg.MaxTokens,
+		temperature:   cfg.Temperature,
+		contextWindow: cfg.ContextWindow,
+	}
+	if p.contextWindow == 0 {
+		p.contextWindow = GetContextWindow(p.model)
 	}
 	return p
 }
 
-// Name 返回 provider 名称。
-func (p *OpenAIProvider) Name() string { return "openai" }
+func (p *OpenAIProvider) Name() string           { return "openai" }
+func (p *OpenAIProvider) ContextWindow() int      { return p.contextWindow }
 
 // 编译期校验 OpenAIProvider 满足 Provider 接口。
 var _ Provider = (*OpenAIProvider)(nil)

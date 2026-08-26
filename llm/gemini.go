@@ -26,12 +26,13 @@ const (
 // function_call / function_response part 传递而非顶层字段；思考内容放在
 // part.thought 中。
 type GeminiProvider struct {
-	apiKey      string
-	baseURL     string
-	client      *http.Client
-	model       string
-	maxTokens   int
-	temperature *float64
+	apiKey        string
+	baseURL       string
+	client        *http.Client
+	model         string
+	maxTokens     int
+	temperature   *float64
+	contextWindow int
 }
 
 // NewGeminiProvider 构造 Gemini provider。
@@ -42,12 +43,13 @@ func NewGeminiProvider(apiKey string, opts ...ProviderOption) *GeminiProvider {
 	o := &ProviderOptions{}
 	o.apply(opts)
 	p := &GeminiProvider{
-		apiKey:      apiKey,
-		baseURL:     o.BaseURL,
-		client:      o.HTTPClient,
-		model:       o.Model,
-		maxTokens:   o.MaxTokens,
-		temperature: o.Temperature,
+		apiKey:        apiKey,
+		baseURL:       o.BaseURL,
+		client:        o.HTTPClient,
+		model:         o.Model,
+		maxTokens:     o.MaxTokens,
+		temperature:   o.Temperature,
+		contextWindow: o.ContextWindow,
 	}
 	if p.baseURL == "" {
 		p.baseURL = defaultGeminiBaseURL
@@ -59,11 +61,15 @@ func NewGeminiProvider(apiKey string, opts ...ProviderOption) *GeminiProvider {
 		p.model = defaultGeminiModel
 	}
 	p.baseURL = strings.TrimSuffix(p.baseURL, "/")
+	if p.contextWindow == 0 {
+		p.contextWindow = GetContextWindow(p.model)
+	}
 	return p
 }
 
 // Name 返回 provider 名称。
-func (p *GeminiProvider) Name() string { return "gemini" }
+func (p *GeminiProvider) Name() string           { return "gemini" }
+func (p *GeminiProvider) ContextWindow() int      { return p.contextWindow }
 
 // 编译期校验 GeminiProvider 满足 Provider 接口。
 var _ Provider = (*GeminiProvider)(nil)

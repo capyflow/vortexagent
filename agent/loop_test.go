@@ -20,7 +20,8 @@ type fakeProvider struct {
 	lastReq   *llm.ChatRequest
 }
 
-func (f *fakeProvider) Name() string { return f.name }
+func (f *fakeProvider) Name() string              { return f.name }
+func (f *fakeProvider) ContextWindow() int         { return 128000 }
 
 func (f *fakeProvider) Chat(_ context.Context, req *llm.ChatRequest, onDelta func(llm.Delta) error) (*llm.ChatResponse, error) {
 	f.lastReq = req
@@ -181,18 +182,18 @@ func TestRegistry_Duplicate(t *testing.T) {
 	}
 }
 
-// errProvider 是总是返回错误的假 provider。
 type errProvider struct{ name string }
 
-func (f *errProvider) Name() string { return f.name }
+func (f *errProvider) Name() string              { return f.name }
+func (f *errProvider) ContextWindow() int         { return 128000 }
 func (f *errProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
 	return nil, errors.New("模拟 API 故障")
 }
 
-// emptyProvider 返回只有思考块、没有文本内容的回复（如 max_tokens 耗尽）。
 type emptyProvider struct{ name string }
 
-func (f *emptyProvider) Name() string { return f.name }
+func (f *emptyProvider) Name() string              { return f.name }
+func (f *emptyProvider) ContextWindow() int         { return 128000 }
 func (f *emptyProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{
 		Message: llm.Message{

@@ -30,6 +30,7 @@ type AnthropicProvider struct {
 	maxTokens      int
 	temperature    *float64
 	thinkingBudget int
+	contextWindow  int
 }
 
 // NewAnthropicProvider 构造 Anthropic provider。
@@ -54,11 +55,16 @@ func NewAnthropicProvider(apiKey string, opts ...ProviderOption) *AnthropicProvi
 	}
 	p.temperature = po.Temperature
 	p.thinkingBudget = po.ThinkingBudget
+	p.contextWindow = po.ContextWindow
+	if p.contextWindow == 0 {
+		p.contextWindow = GetContextWindow(p.model)
+	}
 	return p
 }
 
 // Name 返回 provider 名称。
-func (p *AnthropicProvider) Name() string { return "anthropic" }
+func (p *AnthropicProvider) Name() string           { return "anthropic" }
+func (p *AnthropicProvider) ContextWindow() int      { return p.contextWindow }
 
 // 编译期断言：满足 Provider 接口。
 var _ Provider = (*AnthropicProvider)(nil)
