@@ -30,7 +30,8 @@ type AskOption interface {
 }
 
 type askConfig struct {
-	skill *Skill
+	skill    *Skill
+	jsonMode bool
 }
 
 type withSkill struct {
@@ -44,6 +45,19 @@ func (w *withSkill) apply(cfg *askConfig) {
 // WithSkill 指定本次提问使用的 skill（单次有效）
 func WithSkill(skill *Skill) AskOption {
 	return &withSkill{skill: skill}
+}
+
+type withJSONMode struct{}
+
+func (w *withJSONMode) apply(cfg *askConfig) {
+	cfg.jsonMode = true
+}
+
+// WithJSONMode 要求本次回答只输出合法 JSON（结构化输出：意图分类、字段抽取
+// 等场景）。映射到各厂商的 JSON 模式（Anthropic 为系统提示约束）。
+// 解析响应仍是使用方的责任——建议对解析失败做重试或降级。
+func WithJSONMode() AskOption {
+	return &withJSONMode{}
 }
 
 func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInput string, opts ...AskOption) (answer string, err error) {
@@ -79,7 +93,7 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 		}
 
 		start := time.Now()
-		resp, err := a.chat(ctx, session, cfg.skill)
+		resp, err := a.chat(ctx, session, cfg)
 		a.fireLLMCall(ctx, LLMCallInfo{
 			Model:    a.effectiveModel(cfg.skill),
 			Round:    iter,
@@ -129,7 +143,7 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 	return "", fmt.Errorf("agent: 工具调用超过 %d 轮仍未结束", a.maxIter)
 }
 
-func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, skill *Skill) (*llm.ChatResponse, error) {
+func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *askConfig) (*llm.ChatResponse, error) {
 	var history []llm.Message
 	if a.contextManager != nil {
 		history = a.contextManager.BuildMessages()
@@ -137,11 +151,12 @@ func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, skill *
 		history = session.Messages()
 	}
 
-	systemPrompt := a.buildSystemPromptForSkill(skill)
+	systemPrompt := a.buildSystemPromptForSkill(cfg.skill)
 	req := &llm.ChatRequest{
-		Model:    a.model,
+		Model:    a.effectiveModel(cfg.skill),
 		Messages: a.withSystemPrompt(history, systemPrompt),
 		Thinking: a.thinking,
+		JSONMode: cfg.jsonMode,
 	}
 	if a.maxTokens > 0 {
 		req.MaxTokens = a.maxTokens

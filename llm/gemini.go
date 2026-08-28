@@ -247,7 +247,7 @@ func (p *GeminiProvider) buildRequest(req *ChatRequest, model string) (*wireGemi
 	if maxTokens == 0 {
 		maxTokens = p.maxTokens
 	}
-	if temperature != nil || maxTokens > 0 || req.Thinking {
+	if temperature != nil || maxTokens > 0 || req.Thinking || req.JSONMode {
 		gc := &wireGeminiGenerationConfig{}
 		if temperature != nil {
 			gc.Temperature = temperature
@@ -257,6 +257,9 @@ func (p *GeminiProvider) buildRequest(req *ChatRequest, model string) (*wireGemi
 		}
 		if req.Thinking {
 			gc.ThinkingConfig = &wireGeminiThinkingConfig{IncludeThoughts: true}
+		}
+		if req.JSONMode {
+			gc.ResponseMIMEType = "application/json"
 		}
 		wire.GenerationConfig = gc
 	}
@@ -601,9 +604,10 @@ type wireGeminiFunctionDecl struct {
 
 // wireGeminiGenerationConfig 是生成参数配置。
 type wireGeminiGenerationConfig struct {
-	Temperature     *float64                  `json:"temperature,omitempty"`
-	MaxOutputTokens int                       `json:"maxOutputTokens,omitempty"`
-	ThinkingConfig  *wireGeminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	Temperature      *float64                  `json:"temperature,omitempty"`
+	MaxOutputTokens  int                       `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig   *wireGeminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseMIMEType string                    `json:"responseMimeType,omitempty"`
 }
 
 // wireGeminiThinkingConfig 是思考模式配置。

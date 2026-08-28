@@ -119,6 +119,9 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest, onDelta fun
 	if wire.MaxTokens == 0 {
 		wire.MaxTokens = p.maxTokens
 	}
+	if req.JSONMode {
+		wire.ResponseFormat = &wireResponseFormat{Type: "json_object"}
+	}
 
 	streaming := onDelta != nil
 	wire.Stream = streaming
@@ -418,12 +421,18 @@ func imageDataURL(c Content) (string, error) {
 
 // wireChatRequest 是请求体的 wire 形态。
 type wireChatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []wireChatMessage `json:"messages"`
-	Tools       []wireToolDecl    `json:"tools,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Model          string               `json:"model"`
+	Messages       []wireChatMessage    `json:"messages"`
+	Tools          []wireToolDecl       `json:"tools,omitempty"`
+	Stream         bool                 `json:"stream,omitempty"`
+	Temperature    *float64             `json:"temperature,omitempty"`
+	MaxTokens      int                  `json:"max_tokens,omitempty"`
+	ResponseFormat *wireResponseFormat  `json:"response_format,omitempty"`
+}
+
+// wireResponseFormat 是 OpenAI 的 response_format 字段（JSON 模式映射到这里）。
+type wireResponseFormat struct {
+	Type string `json:"type"`
 }
 
 // wireChatMessage 是请求体单条消息的 wire 形态，content 可能是字符串或数组。

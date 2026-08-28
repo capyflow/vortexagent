@@ -284,6 +284,28 @@ func TestAsk_RollsBackHistoryOnError(t *testing.T) {
 	}
 }
 
+// TestAsk_JSONMode 校验 WithJSONMode 把 JSON 模式传递给 LLM 请求。
+func TestAsk_JSONMode(t *testing.T) {
+	fp := &fakeProvider{name: "fake", maxRounds: 0}
+	ag := New(Options{Provider: fp, Model: "m1"})
+	session := sessionstore.NewSession("m1")
+
+	if _, err := ag.Ask(context.Background(), session, "分类这句话", WithJSONMode()); err != nil {
+		t.Fatalf("Ask 失败: %v", err)
+	}
+	if fp.lastReq == nil || !fp.lastReq.JSONMode {
+		t.Error("请求应携带 JSONMode")
+	}
+
+	// 不带选项时不应开启
+	if _, err := ag.Ask(context.Background(), session, "普通问题"); err != nil {
+		t.Fatalf("Ask 失败: %v", err)
+	}
+	if fp.lastReq.JSONMode {
+		t.Error("未使用 WithJSONMode 时不应开启 JSON 模式")
+	}
+}
+
 // namedTool 是带名称的最小工具实现。
 type namedTool struct{ name string }
 
