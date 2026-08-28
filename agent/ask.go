@@ -78,7 +78,15 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 			return "", err
 		}
 
+		start := time.Now()
 		resp, err := a.chat(ctx, session, cfg.skill)
+		a.fireLLMCall(ctx, LLMCallInfo{
+			Model:    a.effectiveModel(cfg.skill),
+			Round:    iter,
+			Duration: time.Since(start),
+			Usage:    usageOf(resp),
+			Err:      err,
+		})
 		if err != nil {
 			session.Rollback(baseLen)
 			return "", fmt.Errorf("agent: 第 %d 轮调用失败: %w", iter, err)
@@ -308,4 +316,20 @@ func textOf(m llm.Message) string {
 		}
 	}
 	return sb.String()
+}
+
+// usageOf 提取响应中的 token 消耗（nil 响应返回零值）。
+func usageOf(resp *llm.ChatResponse) llm.Usage {
+	if resp == nil {
+		return llm.Usage{}
+	}
+	return resp.Usage
+}
+
+// effectiveModel 返回本次 Ask 实际使用的模型名（skill 可覆盖 Agent 默认模型）。
+func (a *Agent) effectiveModel(skill *Skill) string {
+	if skill != nil && skill.Metadata.Model != "" {
+		return skill.Metadata.Model
+	}
+	return a.model
 }
