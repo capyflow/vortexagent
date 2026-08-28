@@ -55,10 +55,31 @@ func (s *Session) Add(m llm.Message) {
 	s.UpdatedAt = time.Now()
 }
 
+// Messages 返回活跃历史的副本。返回副本而不是内部切片：
+// 调用方遍历时若另一协程 Add / Rollback，切片增长会产生数据竞争。
 func (s *Session) Messages() []llm.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.History
+	out := make([]llm.Message, len(s.History))
+	copy(out, s.History)
+	return out
+}
+
+// MessageCount 返回活跃历史条数（并发安全，供只需要计数的调用方使用）。
+func (s *Session) MessageCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.History)
+}
+
+// ReplaceHistory 用 keep 替换活跃历史并记录卸载块（ContextManager 卸载专用）。
+// 替换与追加在同一把锁内完成——分开写会产生中间态（历史已换、卸载块未记）。
+func (s *Session) ReplaceHistory(keep []llm.Message, chunk OffloadedChunk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.History = keep
+	s.Offloaded = append(s.Offloaded, chunk)
+	s.UpdatedAt = time.Now()
 }
 
 func (s *Session) Clear() {

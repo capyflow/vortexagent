@@ -77,19 +77,19 @@ func (cm *ContextManager) ShouldOffload() bool {
 		usage := cm.ContextUsage()
 		return usage >= OffloadThresholdRatio
 	}
-	return len(cm.session.History) > cm.OffloadThreshold
+	return cm.session.MessageCount() > cm.OffloadThreshold
 }
 
 func (cm *ContextManager) EstimateTokens() int {
 	total := 0
-	for _, msg := range cm.session.History {
+	for _, msg := range cm.session.Messages() {
 		for _, c := range msg.Content {
 			if c.Type == llm.ContentText {
 				total += llm.EstimateTokenCount(c.Text)
 			}
 		}
 	}
-	for _, chunk := range cm.session.Offloaded {
+	for _, chunk := range cm.session.GetOffloaded() {
 		total += llm.EstimateTokenCount(chunk.Summary)
 	}
 	return total
@@ -104,7 +104,8 @@ func (cm *ContextManager) ContextUsage() float64 {
 }
 
 func (cm *ContextManager) Offload(ctx context.Context) error {
-	history := cm.session.History
+	// 历史读取与替换都走会话的锁：Offload 可能与 Add / 并发请求同时发生。
+	history := cm.session.Messages()
 	if len(history) <= cm.MaxActiveMessages {
 		return nil
 	}
@@ -119,12 +120,18 @@ func (cm *ContextManager) Offload(ctx context.Context) error {
 		return fmt.Errorf("生成摘要失败: %w", err)
 	}
 
+	// StartIdx/EndIdx 记录的是"原始完整历史"中的位置：
+	// 当前活跃历史是原始历史的尾部（滑动窗口策略），加上之前已卸载的消息数即得。
+	base := 0
+	for _, chunk := range cm.session.GetOffloaded() {
+		base += chunk.MsgCount
+	}
 	chunk := sessionstore.OffloadedChunk{
 		ID:        fmt.Sprintf("chunk-%d", time.Now().UnixMilli()),
 		Summary:   summary,
 		MsgCount:  len(toOffload),
-		StartIdx:  0,
-		EndIdx:    len(toOffload) - 1,
+		StartIdx:  base,
+		EndIdx:    base + len(toOffload) - 1,
 		CreatedAt: time.Now(),
 	}
 
@@ -134,8 +141,7 @@ func (cm *ContextManager) Offload(ctx context.Context) error {
 		}
 	}
 
-	cm.session.History = toKeep
-	cm.session.AddOffloaded(chunk)
+	cm.session.ReplaceHistory(toKeep, chunk)
 
 	return nil
 }
@@ -215,7 +221,7 @@ func (cm *ContextManager) BuildMessages() []llm.Message {
 		msgs = append(msgs, llm.NewTextMessage(llm.RoleSystem, summary))
 	}
 
-	msgs = append(msgs, cm.session.History...)
+	msgs = append(msgs, cm.session.Messages()...)
 
 	return msgs
 }
