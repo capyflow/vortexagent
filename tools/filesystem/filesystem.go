@@ -1,3 +1,7 @@
+// Package filesystem 提供本地文件读写类工具（read/write/edit/list）。
+//
+// 所有路径都经过 safeResolve 校验：工具参数由模型生成，可能被 prompt injection
+// 诱导读写任意文件，因此路径边界是这类工具的安全底线。
 package filesystem
 
 import (
@@ -11,6 +15,57 @@ import (
 const (
 	MaxFileSize = 1024 * 1024 // 1MB
 )
+
+// safeResolve 把模型提供的路径解析为 rootDir 内的绝对路径，拒绝一切越界。
+//
+// 三层校验（缺一不可）：
+//  1. 绝对路径不直接放行——同样必须落在 rootDir 内；
+//  2. 用 filepath.Rel 判断越界，而不是 HasPrefix：后者会被同级前缀目录绕过
+//     （rootDir=/a/proj 时，/a/proj-evil 也满足 "/a/proj" 前缀）；
+//  3. EvalSymlinks 解析真实路径后二次校验，拒绝符号链接逃逸；
+//     目标尚不存在（write_file 新建文件）时退而校验其父目录。
+func safeResolve(rootDir, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("路径不能为空")
+	}
+	rootAbs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return "", fmt.Errorf("解析根目录失败: %w", err)
+	}
+	rootReal := rootAbs
+	if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootReal = resolved
+	}
+
+	target := path
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(rootAbs, target)
+	}
+	target = filepath.Clean(target)
+
+	if !withinRoot(rootReal, target) {
+		return "", fmt.Errorf("路径越界: %s", path)
+	}
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		if !withinRoot(rootReal, real) {
+			return "", fmt.Errorf("路径越界（符号链接）: %s", path)
+		}
+	} else if realParent, err := filepath.EvalSymlinks(filepath.Dir(target)); err == nil {
+		if !withinRoot(rootReal, realParent) {
+			return "", fmt.Errorf("路径越界（符号链接）: %s", path)
+		}
+	}
+	return target, nil
+}
+
+// withinRoot 判断 path 是否位于 root 之内（含 root 本身）。
+func withinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
 
 type ReadFileTool struct {
 	rootDir string
@@ -45,11 +100,8 @@ func (t *ReadFileTool) Schema() map[string]any {
 
 func (t *ReadFileTool) Call(ctx context.Context, args map[string]any) (string, error) {
 	path, _ := args["path"].(string)
-	if path == "" {
-		return "", fmt.Errorf("path 不能为空")
-	}
 
-	absPath, err := t.resolvePath(path)
+	absPath, err := safeResolve(t.rootDir, path)
 	if err != nil {
 		return "", err
 	}
@@ -71,18 +123,6 @@ func (t *ReadFileTool) Call(ctx context.Context, args map[string]any) (string, e
 	}
 
 	return string(data), nil
-}
-
-func (t *ReadFileTool) resolvePath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	abs := filepath.Join(t.rootDir, path)
-	clean := filepath.Clean(abs)
-	if !strings.HasPrefix(clean, t.rootDir) {
-		return "", fmt.Errorf("路径越界")
-	}
-	return clean, nil
 }
 
 type WriteFileTool struct {
@@ -123,11 +163,8 @@ func (t *WriteFileTool) Schema() map[string]any {
 func (t *WriteFileTool) Call(ctx context.Context, args map[string]any) (string, error) {
 	path, _ := args["path"].(string)
 	content, _ := args["content"].(string)
-	if path == "" {
-		return "", fmt.Errorf("path 不能为空")
-	}
 
-	absPath, err := t.resolvePath(path)
+	absPath, err := safeResolve(t.rootDir, path)
 	if err != nil {
 		return "", err
 	}
@@ -142,18 +179,6 @@ func (t *WriteFileTool) Call(ctx context.Context, args map[string]any) (string, 
 	}
 
 	return fmt.Sprintf("文件已写入: %s", path), nil
-}
-
-func (t *WriteFileTool) resolvePath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	abs := filepath.Join(t.rootDir, path)
-	clean := filepath.Clean(abs)
-	if !strings.HasPrefix(clean, t.rootDir) {
-		return "", fmt.Errorf("路径越界")
-	}
-	return clean, nil
 }
 
 type EditFileTool struct {
@@ -200,11 +225,11 @@ func (t *EditFileTool) Call(ctx context.Context, args map[string]any) (string, e
 	oldString, _ := args["old_string"].(string)
 	newString, _ := args["new_string"].(string)
 
-	if path == "" || oldString == "" {
-		return "", fmt.Errorf("path 和 old_string 不能为空")
+	if oldString == "" {
+		return "", fmt.Errorf("old_string 不能为空")
 	}
 
-	absPath, err := t.resolvePath(path)
+	absPath, err := safeResolve(t.rootDir, path)
 	if err != nil {
 		return "", err
 	}
@@ -230,18 +255,6 @@ func (t *EditFileTool) Call(ctx context.Context, args map[string]any) (string, e
 	}
 
 	return fmt.Sprintf("文件已编辑: %s", path), nil
-}
-
-func (t *EditFileTool) resolvePath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	abs := filepath.Join(t.rootDir, path)
-	clean := filepath.Clean(abs)
-	if !strings.HasPrefix(clean, t.rootDir) {
-		return "", fmt.Errorf("路径越界")
-	}
-	return clean, nil
 }
 
 type ListFilesTool struct {
@@ -280,7 +293,7 @@ func (t *ListFilesTool) Call(ctx context.Context, args map[string]any) (string, 
 		path = "."
 	}
 
-	absPath, err := t.resolvePath(path)
+	absPath, err := safeResolve(t.rootDir, path)
 	if err != nil {
 		return "", err
 	}
@@ -303,16 +316,4 @@ func (t *ListFilesTool) Call(ctx context.Context, args map[string]any) (string, 
 		return "目录为空", nil
 	}
 	return strings.Join(result, "\n"), nil
-}
-
-func (t *ListFilesTool) resolvePath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-	abs := filepath.Join(t.rootDir, path)
-	clean := filepath.Clean(abs)
-	if !strings.HasPrefix(clean, t.rootDir) {
-		return "", fmt.Errorf("路径越界")
-	}
-	return clean, nil
 }
