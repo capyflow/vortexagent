@@ -175,6 +175,19 @@ func (a *Agent) execTool(ctx context.Context, call llm.ToolCall) (string, error)
 			return "", &nonRetryableError{fmt.Errorf("工具调用被拦截: %w", err)}
 		}
 	}
+	return a.callWithRecover(ctx, call)
+}
+
+// callWithRecover 把工具实现的 panic 转为错误文本：工具可能来自任意 MCP server
+// 或使用方代码，一个 panic 不应打穿 Ask 循环（CLI 崩进程、server 留下半截会话）。
+// panic 标记为不可重试：同样的参数大概率再次 panic，重试只是浪费退避时间。
+func (a *Agent) callWithRecover(ctx context.Context, call llm.ToolCall) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+			err = &nonRetryableError{fmt.Errorf("工具 %s panic: %v", call.Name, r)}
+		}
+	}()
 	return a.registry.Call(ctx, call.Name, call.Arguments)
 }
 

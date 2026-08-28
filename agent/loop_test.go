@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
@@ -20,8 +21,8 @@ type fakeProvider struct {
 	lastReq   *llm.ChatRequest
 }
 
-func (f *fakeProvider) Name() string              { return f.name }
-func (f *fakeProvider) ContextWindow() int         { return 128000 }
+func (f *fakeProvider) Name() string       { return f.name }
+func (f *fakeProvider) ContextWindow() int { return 128000 }
 
 func (f *fakeProvider) Chat(_ context.Context, req *llm.ChatRequest, onDelta func(llm.Delta) error) (*llm.ChatResponse, error) {
 	f.lastReq = req
@@ -166,6 +167,51 @@ func TestAsk_UnknownTool(t *testing.T) {
 	_ = ans
 }
 
+// panicTool 是会 panic 的工具：模拟有 bug 的第三方工具 / MCP server 实现。
+type panicTool struct{}
+
+func (t *panicTool) Name() string        { return "boom" }
+func (t *panicTool) Description() string { return "必定 panic 的工具" }
+func (t *panicTool) Schema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *panicTool) Call(context.Context, map[string]any) (string, error) {
+	panic("工具内部爆炸了")
+}
+
+// TestAsk_ToolPanicRecovered 校验工具 panic 被转为错误文本回传模型，
+// Ask 循环继续走完而不是打穿调用链；且 panic 视为不可重试（立即返回）。
+func TestAsk_ToolPanicRecovered(t *testing.T) {
+	fp := &fakeProvider{name: "fake", toolName: "boom", maxRounds: 1}
+	reg := NewRegistry()
+	if err := reg.Add(&panicTool{}); err != nil {
+		t.Fatal(err)
+	}
+	ag := New(Options{Provider: fp, Registry: reg, Model: "m1"})
+	session := sessionstore.NewSession("m1")
+
+	start := time.Now()
+	ans, err := ag.Ask(context.Background(), session, "测试 panic 工具")
+	if err != nil {
+		t.Fatalf("工具 panic 不应导致 Ask 失败: %v", err)
+	}
+	if ans != "最终回答" {
+		t.Errorf("回答 = %q", ans)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("panic 后不应重试（耗时 %v）", elapsed)
+	}
+	found := false
+	for _, m := range session.Messages() {
+		if m.Role == llm.RoleTool && strings.Contains(m.Content[0].Text, "工具内部爆炸了") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("历史中应包含 panic 信息的 tool 消息")
+	}
+}
+
 func TestRegistry_Duplicate(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.Add(&echoTool{}); err != nil {
@@ -184,16 +230,16 @@ func TestRegistry_Duplicate(t *testing.T) {
 
 type errProvider struct{ name string }
 
-func (f *errProvider) Name() string              { return f.name }
-func (f *errProvider) ContextWindow() int         { return 128000 }
+func (f *errProvider) Name() string       { return f.name }
+func (f *errProvider) ContextWindow() int { return 128000 }
 func (f *errProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
 	return nil, errors.New("模拟 API 故障")
 }
 
 type emptyProvider struct{ name string }
 
-func (f *emptyProvider) Name() string              { return f.name }
-func (f *emptyProvider) ContextWindow() int         { return 128000 }
+func (f *emptyProvider) Name() string       { return f.name }
+func (f *emptyProvider) ContextWindow() int { return 128000 }
 func (f *emptyProvider) Chat(context.Context, *llm.ChatRequest, func(llm.Delta) error) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{
 		Message: llm.Message{
