@@ -7,10 +7,14 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	DefaultTimeout = 30 * time.Second
+	// MaxTimeout 限制模型可请求的最大超时：模型可能传超大值把调用方拖住
+	// 数小时，上限封顶后超长任务应交给后台机制（如 TaskHub）。
+	MaxTimeout = 10 * time.Minute
 	MaxOutputSize  = 100 * 1024 // 100KB
 )
 
@@ -59,6 +63,9 @@ func (t *ExecTool) Call(ctx context.Context, args map[string]any) (string, error
 	if v, ok := args["timeout"].(float64); ok && v > 0 {
 		timeout = time.Duration(v) * time.Second
 	}
+	if timeout > MaxTimeout {
+		timeout = MaxTimeout
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -74,17 +81,10 @@ func (t *ExecTool) Call(ctx context.Context, args map[string]any) (string, error
 
 	var result strings.Builder
 	if stdout.Len() > 0 {
-		output := stdout.String()
-		if len(output) > MaxOutputSize {
-			output = output[:MaxOutputSize] + "\n... (输出已截断)"
-		}
-		result.WriteString(output)
+		result.WriteString(truncateUTF8(stdout.String(), MaxOutputSize))
 	}
 	if stderr.Len() > 0 {
-		output := stderr.String()
-		if len(output) > MaxOutputSize {
-			output = output[:MaxOutputSize] + "\n... (输出已截断)"
-		}
+		output := truncateUTF8(stderr.String(), MaxOutputSize)
 		if result.Len() > 0 {
 			result.WriteString("\n")
 		}
@@ -104,4 +104,17 @@ func (t *ExecTool) Call(ctx context.Context, args map[string]any) (string, error
 	}
 
 	return result.String(), nil
+}
+
+// truncateUTF8 按字节上限截断并回退到完整的 rune 边界，
+// 避免把多字节字符切成乱码（旧实现按字节硬切）。
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n... (输出已截断)"
 }

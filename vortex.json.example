@@ -20,6 +20,16 @@
     }
   ],
   "systemPrompt": "",
+  "tools": {
+    "exec": {
+      "enabled": false,
+      "workdir": "."
+    },
+    "filesystem": {
+      "enabled": false,
+      "root": "."
+    }
+  },
   "session": {
     "type": "json",
     "file": "~/.vortex/sessions.json"

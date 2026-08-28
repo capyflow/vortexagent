@@ -23,6 +23,30 @@ type Config struct {
 	MCPServers   []MCPServerConfig `json:"mcpServers,omitempty"`
 	SystemPrompt string            `json:"systemPrompt,omitempty"`
 	Session      SessionConfig     `json:"session"`
+	Tools        *ToolsConfig      `json:"tools,omitempty"`
+}
+
+// ToolsConfig 内置工具开关（默认全关：内置工具涉及本机执行，按需启用）。
+type ToolsConfig struct {
+	// Exec 启用 exec_command 工具（执行 shell 命令）。风险较高，
+	// 建议配合 Hooks.OnBeforeToolCall 做命令白名单。
+	Exec *ExecToolConfig `json:"exec,omitempty"`
+
+	// Filesystem 启用 read_file / write_file / edit_file / list_files 工具，
+	// 所有路径被限制在 root 目录内（防 prompt injection 越权读写）。
+	Filesystem *FilesystemToolConfig `json:"filesystem,omitempty"`
+}
+
+// ExecToolConfig exec 工具配置。
+type ExecToolConfig struct {
+	Enabled bool   `json:"enabled"`
+	Workdir string `json:"workdir,omitempty"` // 工作目录，默认当前目录
+}
+
+// FilesystemToolConfig filesystem 工具组配置。
+type FilesystemToolConfig struct {
+	Enabled bool   `json:"enabled"`
+	Root    string `json:"root,omitempty"` // 允许访问的根目录，默认当前目录
 }
 
 // SessionConfig 会话存储配置。
