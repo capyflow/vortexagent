@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,18 +16,23 @@ import (
 
 // scriptProvider 按脚本依次返回响应（区别于 fakeProvider 的固定轮数模式），
 // 用于精确编排"父 agent 委派 → 子 agent 完成 → 父 agent 收尾"的多步流程。
+// 并发安全：TaskHub 会用多个 goroutine 同时驱动同一个 provider。
 type scriptProvider struct {
-	name    string
-	script  []llm.ChatResponse
+	name   string
+	script []llm.ChatResponse
+	errAt  map[int]error // 第 N 次调用时返回的错误
+
+	mu      sync.Mutex
 	calls   int
 	lastReq *llm.ChatRequest
-	errAt   map[int]error // 第 N 次调用时返回的错误
 }
 
 func (p *scriptProvider) Name() string       { return p.name }
 func (p *scriptProvider) ContextWindow() int { return 128000 }
 
 func (p *scriptProvider) Chat(_ context.Context, req *llm.ChatRequest, _ func(llm.Delta) error) (*llm.ChatResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err, ok := p.errAt[p.calls]; ok {
 		p.calls++
 		return nil, err
@@ -40,6 +46,13 @@ func (p *scriptProvider) Chat(_ context.Context, req *llm.ChatRequest, _ func(ll
 	resp := p.script[p.calls]
 	p.calls++
 	return &resp, nil
+}
+
+// callCount 返回已被调用的次数。
+func (p *scriptProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func textResp(text string) llm.ChatResponse {
@@ -91,8 +104,8 @@ func TestSubagentTool_Delegation(t *testing.T) {
 	if ans != "您的订单已发货" {
 		t.Errorf("最终回答 = %q, 期望 %q", ans, "您的订单已发货")
 	}
-	if subProv.calls != 1 {
-		t.Errorf("子 agent 调用次数 = %d, 期望 1", subProv.calls)
+	if subProv.callCount() != 1 {
+		t.Errorf("子 agent 调用次数 = %d, 期望 1", subProv.callCount())
 	}
 
 	// 子 agent 收到的请求：system + task，两条，不含父 agent 的任何历史
@@ -192,8 +205,8 @@ func TestSubagentTool_InterceptedByParentHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ask 失败: %v", err)
 	}
-	if subProv.calls != 0 {
-		t.Errorf("被拦截后子 agent 不应被调用，实际 %d 次", subProv.calls)
+	if subProv.callCount() != 0 {
+		t.Errorf("被拦截后子 agent 不应被调用，实际 %d 次", subProv.callCount())
 	}
 	if ans != "好的，不委派了" {
 		t.Errorf("最终回答 = %q", ans)
@@ -226,8 +239,8 @@ func TestSubagentTool_DepthLimit(t *testing.T) {
 	if !strings.Contains(err.Error(), "嵌套深度") {
 		t.Errorf("错误信息 = %v, 应包含嵌套深度说明", err)
 	}
-	if subProv.calls != 0 {
-		t.Errorf("超限后子 agent 不应被调用，实际 %d 次", subProv.calls)
+	if subProv.callCount() != 0 {
+		t.Errorf("超限后子 agent 不应被调用，实际 %d 次", subProv.callCount())
 	}
 }
 

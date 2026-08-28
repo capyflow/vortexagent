@@ -48,6 +48,10 @@ func (s TaskState) terminal() bool {
 // maxPending 是排队任务数上限：防止模型无节制地分发任务把内存吃满。
 const maxPending = 64
 
+// maxTaskHistory 是任务记录保留上限：超过后从最旧的已结束任务开始淘汰，
+// 防止长驻进程的 tasks 表无限增长（进行中的任务不会被淘汰）。
+const maxTaskHistory = 256
+
 // Task 是一次后台子 agent 任务的记录。
 type Task struct {
 	ID        string    // 任务 ID（task-000001），收取结果时使用
@@ -207,7 +211,7 @@ func (h *TaskHub) run(t *Task, sub *Agent) {
 	h.finish(t, TaskDone, answer, nil)
 }
 
-// finish 记录任务终态（幂等：终态不会被覆盖）。
+// finish 记录任务终态（幂等：终态不会被覆盖），随后按需淘汰最旧的已结束任务。
 func (h *TaskHub) finish(t *Task, state TaskState, result string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -220,6 +224,29 @@ func (h *TaskHub) finish(t *Task, state TaskState, result string, err error) {
 		t.Err = err.Error()
 	}
 	t.EndedAt = time.Now()
+	h.pruneLocked()
+}
+
+// pruneLocked 淘汰最旧的已结束任务，把记录数压回 maxTaskHistory 以内
+// （按 ID 递增即提交顺序；进行中的任务不淘汰）。
+// 调用方需持有 h.mu。
+func (h *TaskHub) pruneLocked() {
+	if len(h.tasks) <= maxTaskHistory {
+		return
+	}
+	var terminal []string
+	for id, t := range h.tasks {
+		if t.State.terminal() {
+			terminal = append(terminal, id)
+		}
+	}
+	sort.Strings(terminal)
+	for _, id := range terminal {
+		if len(h.tasks) <= maxTaskHistory {
+			return
+		}
+		delete(h.tasks, id)
+	}
 }
 
 // Status 返回任务快照；id 不存在时第二个返回值为 false。

@@ -111,7 +111,7 @@ func (a *Agent) buildSystemPromptForSkill(skill *Skill) string {
 
 // WithDelta 返回一个带有新 delta 回调的 Agent 副本（用于 SSE 流式）
 func (a *Agent) WithDelta(onDelta func(llm.Delta)) *Agent {
-副本 := *a
-	副本.onDelta = onDelta
-	return &副本
+	clone := *a
+	clone.onDelta = onDelta
+	return &clone
 }

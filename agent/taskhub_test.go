@@ -282,8 +282,8 @@ func TestTaskHub_AgentEndToEnd(t *testing.T) {
 	if ans != "汇总：库存 32 件" {
 		t.Errorf("最终回答 = %q", ans)
 	}
-	if subProv.calls != 1 {
-		t.Errorf("子 agent 调用次数 = %d, 期望 1", subProv.calls)
+	if subProv.callCount() != 1 {
+		t.Errorf("子 agent 调用次数 = %d, 期望 1", subProv.callCount())
 	}
 	// task_wait 的结果应把子 agent 的回答带回父历史
 	found := false
@@ -294,6 +294,48 @@ func TestTaskHub_AgentEndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Error("父历史中应包含 task_wait 带回的子任务结果")
+	}
+}
+
+// TestTaskHub_HistoryPruned 校验任务记录淘汰：超过 maxTaskHistory 后
+// 最旧的已结束任务被清理，最新任务保留。
+func TestTaskHub_HistoryPruned(t *testing.T) {
+	subProv := &scriptProvider{name: "sub", script: []llm.ChatResponse{{}}}
+	// 脚本耗尽时返回固定文本，见 scriptProvider
+	sub := New(Options{Provider: subProv, Model: "m"})
+	hub := NewTaskHub(context.Background(), 8)
+	if err := hub.Register("worker", sub); err != nil {
+		t.Fatal(err)
+	}
+
+	const total = maxTaskHistory + 40
+	ids := make([]string, 0, total)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for i := 0; i < total; i++ {
+		id, err := hub.Submit("worker", "任务")
+		if err != nil {
+			t.Fatalf("第 %d 个任务提交失败: %v", i, err)
+		}
+		ids = append(ids, id)
+		// 分批等待：Submit 快于完成，避免撞上 maxPending 排队上限
+		if (i+1)%50 == 0 {
+			if err := hub.WaitAll(ctx); err != nil {
+				t.Fatalf("批量等待失败: %v", err)
+			}
+		}
+	}
+	if err := hub.WaitAll(ctx); err != nil {
+		t.Fatalf("WaitAll 失败: %v", err)
+	}
+
+	tasks := hub.Tasks()
+	if len(tasks) > maxTaskHistory {
+		t.Errorf("任务记录数 = %d, 应不超过 %d", len(tasks), maxTaskHistory)
+	}
+	// 最新任务必须仍在（最旧的被淘汰）
+	if _, ok := hub.Status(ids[len(ids)-1]); !ok {
+		t.Error("最新的任务记录不应被淘汰")
 	}
 }
 
