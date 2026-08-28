@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -157,14 +158,21 @@ func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, skill *
 	return a.provider.Chat(ctx, req, onDelta)
 }
 
+// nonRetryableError 标记重试也不会成功的工具错误（权限拦截、未知工具、参数错误、
+// 子任务失败等永久性错误）。execToolWithRetry 见到它立即返回，不再做退避重试。
+type nonRetryableError struct{ err error }
+
+func (e *nonRetryableError) Error() string { return e.err.Error() }
+func (e *nonRetryableError) Unwrap() error { return e.err }
+
 // execTool 执行单个工具调用并返回结果文本。
 func (a *Agent) execTool(ctx context.Context, call llm.ToolCall) (string, error) {
 	if a.registry == nil {
-		return "", fmt.Errorf("未注册任何工具")
+		return "", &nonRetryableError{fmt.Errorf("未注册任何工具")}
 	}
 	if a.hooks != nil && a.hooks.OnBeforeToolCall != nil {
 		if err := a.hooks.OnBeforeToolCall(ctx, call.Name, call.Arguments); err != nil {
-			return "", fmt.Errorf("工具调用被拦截: %w", err)
+			return "", &nonRetryableError{fmt.Errorf("工具调用被拦截: %w", err)}
 		}
 	}
 	return a.registry.Call(ctx, call.Name, call.Arguments)
@@ -186,6 +194,10 @@ func (a *Agent) execToolWithRetry(ctx context.Context, call llm.ToolCall) (strin
 		result, err := a.execTool(ctx, call)
 		if err == nil {
 			return result, nil
+		}
+		var nr *nonRetryableError
+		if errors.As(err, &nr) {
+			return "", err
 		}
 
 		lastErr = err
