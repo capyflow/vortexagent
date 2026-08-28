@@ -14,8 +14,8 @@ const (
 	DefaultTimeout = 30 * time.Second
 	// MaxTimeout 限制模型可请求的最大超时：模型可能传超大值把调用方拖住
 	// 数小时，上限封顶后超长任务应交给后台机制（如 TaskHub）。
-	MaxTimeout = 10 * time.Minute
-	MaxOutputSize  = 100 * 1024 // 100KB
+	MaxTimeout    = 10 * time.Minute
+	MaxOutputSize = 100 * 1024 // 100KB
 )
 
 type ExecTool struct {

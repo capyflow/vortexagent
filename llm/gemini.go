@@ -68,8 +68,8 @@ func NewGeminiProvider(apiKey string, opts ...ProviderOption) *GeminiProvider {
 }
 
 // Name 返回 provider 名称。
-func (p *GeminiProvider) Name() string           { return "gemini" }
-func (p *GeminiProvider) ContextWindow() int      { return p.contextWindow }
+func (p *GeminiProvider) Name() string       { return "gemini" }
+func (p *GeminiProvider) ContextWindow() int { return p.contextWindow }
 
 // 编译期校验 GeminiProvider 满足 Provider 接口。
 var _ Provider = (*GeminiProvider)(nil)

@@ -237,7 +237,7 @@ type mockProviderForSkill struct {
 	lastRequest *llm.ChatRequest
 }
 
-func (m *mockProviderForSkill) Name() string      { return "mock" }
+func (m *mockProviderForSkill) Name() string       { return "mock" }
 func (m *mockProviderForSkill) ContextWindow() int { return 4096 }
 
 func (m *mockProviderForSkill) Chat(ctx context.Context, req *llm.ChatRequest, onDelta func(llm.Delta) error) (*llm.ChatResponse, error) {

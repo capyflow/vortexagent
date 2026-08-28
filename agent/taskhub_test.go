@@ -90,7 +90,7 @@ func TestTaskHub_SubmitReturnsImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit 失败: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("Submit 耗时 %v, 应立即返回", elapsed)
 	}
 

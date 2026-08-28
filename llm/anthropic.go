@@ -63,8 +63,8 @@ func NewAnthropicProvider(apiKey string, opts ...ProviderOption) *AnthropicProvi
 }
 
 // Name 返回 provider 名称。
-func (p *AnthropicProvider) Name() string           { return "anthropic" }
-func (p *AnthropicProvider) ContextWindow() int      { return p.contextWindow }
+func (p *AnthropicProvider) Name() string       { return "anthropic" }
+func (p *AnthropicProvider) ContextWindow() int { return p.contextWindow }
 
 // 编译期断言：满足 Provider 接口。
 var _ Provider = (*AnthropicProvider)(nil)

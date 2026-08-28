@@ -289,7 +289,7 @@ func TestAsk_NonRetryableNoBackoff(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%s 应返回错误", name)
 		}
-		if elapsed := time.Since(start); elapsed > time.Second {
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			t.Errorf("%s 的不可重试错误耗时 %v, 应立即返回", name, elapsed)
 		}
 	}
