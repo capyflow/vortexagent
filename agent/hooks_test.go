@@ -149,6 +149,71 @@ func TestHooks_OnError(t *testing.T) {
 	}
 }
 
+// TestHooks_OnLLMCall 校验 LLM 调用级钩子：每轮调用各触发一次，
+// 携带轮次、耗时与 token 消耗。
+func TestHooks_OnLLMCall(t *testing.T) {
+	fp := &fakeProvider{name: "fake", toolName: "echo", maxRounds: 2}
+	reg := NewRegistry()
+	if err := reg.Add(&echoTool{}); err != nil {
+		t.Fatal(err)
+	}
+	var infos []LLMCallInfo
+	ag := New(Options{
+		Provider: fp,
+		Registry: reg,
+		Model:    "m1",
+		Hooks: &Hooks{
+			OnLLMCall: func(_ context.Context, info LLMCallInfo) { infos = append(infos, info) },
+		},
+	})
+
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "查询"); err != nil {
+		t.Fatalf("Ask 失败: %v", err)
+	}
+	if len(infos) != 3 {
+		t.Fatalf("OnLLMCall 次数 = %d, 期望 3（两轮工具 + 一轮最终回答）", len(infos))
+	}
+	for i, info := range infos {
+		if info.Round != i+1 {
+			t.Errorf("infos[%d].Round = %d, 期望 %d", i, info.Round, i+1)
+		}
+		if info.Model != "m1" {
+			t.Errorf("infos[%d].Model = %q, 期望 m1", i, info.Model)
+		}
+		if info.Duration <= 0 {
+			t.Errorf("infos[%d].Duration 应大于 0", i)
+		}
+		if info.Err != nil {
+			t.Errorf("infos[%d].Err 应为 nil: %v", i, info.Err)
+		}
+	}
+}
+
+// TestHooks_OnLLMCallError 校验 LLM 调用失败时钩子同样触发且携带错误。
+func TestHooks_OnLLMCallError(t *testing.T) {
+	var infos []LLMCallInfo
+	ag := New(Options{
+		Provider: &errProvider{name: "err"},
+		Model:    "m1",
+		Hooks: &Hooks{
+			OnLLMCall: func(_ context.Context, info LLMCallInfo) { infos = append(infos, info) },
+		},
+	})
+
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m1"), "问题"); err == nil {
+		t.Fatal("期望 Ask 报错")
+	}
+	if len(infos) != 1 {
+		t.Fatalf("OnLLMCall 次数 = %d, 期望 1", len(infos))
+	}
+	if infos[0].Err == nil {
+		t.Error("失败调用的 Err 应非 nil")
+	}
+	if infos[0].Usage != (llm.Usage{}) {
+		t.Errorf("失败调用的 Usage 应为零值: %+v", infos[0].Usage)
+	}
+}
+
 // TestHooks_Nil 校验不配置钩子时一切正常（空钩子不应 panic）。
 func TestHooks_Nil(t *testing.T) {
 	fp := &fakeProvider{name: "fake", toolName: "echo", maxRounds: 1}

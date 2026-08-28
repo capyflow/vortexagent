@@ -89,6 +89,11 @@ type ChatRequest struct {
 	Temperature *float64    `json:"temperature,omitempty"` // 采样温度，nil 使用模型默认
 	MaxTokens   int         `json:"maxTokens,omitempty"`   // 最大输出 token，0 使用模型默认
 	Thinking    bool        `json:"thinking,omitempty"`    // 是否启用思考模式（旧版 Think 字段的演进）
+	// JSONMode 为 true 时要求模型只输出合法 JSON（结构化输出：意图分类、
+	// 工单字段抽取等场景）。各厂商实现方式不同：OpenAI 兼容层映射
+	// response_format，Gemini 设置 responseMimeType，Anthropic 协议无统一
+	// 字段，在 system 前追加输出约束指令。
+	JSONMode bool `json:"jsonMode,omitempty"`
 }
 
 // Usage 统计一次请求的 token 消耗。

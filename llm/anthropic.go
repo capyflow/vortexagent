@@ -63,8 +63,8 @@ func NewAnthropicProvider(apiKey string, opts ...ProviderOption) *AnthropicProvi
 }
 
 // Name 返回 provider 名称。
-func (p *AnthropicProvider) Name() string           { return "anthropic" }
-func (p *AnthropicProvider) ContextWindow() int      { return p.contextWindow }
+func (p *AnthropicProvider) Name() string       { return "anthropic" }
+func (p *AnthropicProvider) ContextWindow() int { return p.contextWindow }
 
 // 编译期断言：满足 Provider 接口。
 var _ Provider = (*AnthropicProvider)(nil)
@@ -158,6 +158,11 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, onDelta 
 	if sys, ok := buildAnthropicSystem(req.Messages); ok {
 		body.System = sys
 	}
+	if req.JSONMode {
+		// Anthropic 协议没有统一的 response_format 字段，JSON 模式用
+		// 系统提示约束输出（对所有模型生效的通用兜底）。
+		body.System = withJSONInstruction(body.System)
+	}
 	if len(req.Tools) > 0 {
 		body.Tools = make([]anthropicTool, 0, len(req.Tools))
 		for _, t := range req.Tools {
@@ -234,6 +239,25 @@ func buildAnthropicSystem(messages []Message) (any, bool) {
 		return blocks[0].Text, true
 	}
 	return blocks, true
+}
+
+// jsonOutputInstruction 是 JSON 模式下追加到 system 的输出约束。
+const jsonOutputInstruction = "无论被问什么，你的输出必须是一个合法的 JSON 值，" +
+	"不要输出任何解释、注释或 Markdown 代码块围栏。"
+
+// withJSONInstruction 在 system 内容前追加 JSON 输出约束，
+// 兼容 system 的三种形态：nil / 字符串 / 内容块数组。
+func withJSONInstruction(system any) any {
+	switch v := system.(type) {
+	case nil:
+		return jsonOutputInstruction
+	case string:
+		return jsonOutputInstruction + "\n\n" + v
+	case []anthropicContent:
+		return append([]anthropicContent{{Type: "text", Text: jsonOutputInstruction}}, v...)
+	default:
+		return system
+	}
 }
 
 // buildAnthropicMessages 将统一消息映射为 Anthropic 消息数组。

@@ -204,6 +204,8 @@ agent/ 包
 ├── tool.go     Tool 接口（agent 能力的来源）+ Registry 注册表
 ├── session.go  Session 会话：对话历史（agent 的"内存"）
 ├── hooks.go    Hooks 生命周期钩子：观察 / 拦截扩展点（日志、权限）
+├── subagent.go 子 agent 原语：把 Agent 包装成 Tool，供父 agent 委派任务
+├── taskhub.go  异步任务编排：后台并发执行子 agent 任务，分发后不阻塞主 agent
 └── store.go    SessionStore 会话存储：持久化抽象（内存 / JSON 文件实现）
 
 运行时协作关系（一次 Ask 的调用链）：
@@ -366,6 +368,56 @@ type SessionStore interface {
 注意 `agent/ask.go` 只依赖 `llm.Provider` 接口和 `llm.Message` 类型——它不关心背后是
 OpenAI 还是 Gemini。**这就是分层的好处**：循环逻辑写一次，所有厂商通吃。
 
+### 3.6 扩展点三：子 agent（agent/subagent.go）
+
+`NewSubagentTool` 把一个构建好的 Agent 包装成 Tool，是框架衍生**多 agent 系统**的核心原语：
+
+```go
+aftersales := agent.New(agent.Options{Provider: p, Registry: 售后工具, SystemPrompt: "你是售后专员…"})
+parentRegistry.Add(agent.NewSubagentTool("aftersales", "处理退款/换货等售后问题", aftersales))
+```
+
+对父 agent 而言子 agent 就是一个普通工具，因此框架机制原样生效：
+
+- **上下文隔离**：每次委派用全新会话，子 agent 的思考与工具轮次不进入父上下文，
+  只有最终回答作为一条 tool 消息回传——父 agent 的上下文不会被子任务撑爆
+- **权限继承**：父 agent 的 `OnBeforeToolCall` 钩子可以拦截某次委派（子 agent 根本不会启动）
+- **独立配置**：子 agent 可以用不同的模型、提示词、工具箱、轮数上限
+- **递归防护**：委派链路深度有上限（`MaxSubagentDepth`），防止 A 委派 B、B 又委派 A 的死循环
+
+典型衍生场景见 `examples/customer-service-agent`：总机 agent 按意图把问题委派给
+售前 / 售后专员子 agent，每个专员带自己的业务工具。
+
+### 3.7 扩展点四：异步任务编排（agent/taskhub.go）
+
+`SubagentTool` 是**同步**委派（父 agent 阻塞等结果）。`TaskHub` 补上**异步**模式：
+主 agent 分发任务后循环立刻继续，子 agent 在后台各自执行，之后再收结果——
+即"并行调研多项、最后汇总"或"启动长任务、下轮对话再收结果"。
+
+```go
+hub := agent.NewTaskHub(appCtx, 2)          // 应用级 ctx 锚定任务生命周期，并发上限 2
+hub.Register("pricing", pricingAgent)       // 具名子 agent
+registry.Add(hub.Tools()...)                // task_start / task_status / task_wait / task_cancel
+```
+
+Go 并发原语都在框架内部，对模型暴露的只是四个普通工具：
+
+| Go 机制 | 落点 |
+|---------|------|
+| goroutine | 每个 `task_start` 起一个任务 goroutine，跑完即退，无常驻协程 |
+| channel（done） | 每个任务一个完成信号 channel，`task_wait` 据此 join |
+| channel（semaphore） | 带缓冲 channel 限制同时运行的子 agent 数，超出的任务排队（pending） |
+
+关键决策：
+
+- **任务挂在 Hub 的 base ctx 上，而不是某次 Ask 的请求 ctx**——主 agent 本轮回答结束、
+  HTTP 请求返回都不会误杀后台任务；应用退出（base ctx 取消）或 `task_cancel` 才终止
+- **结果靠轮询收取，而不是推送**：Ask 循环是同步的，"完成后唤醒父 agent"需要常驻
+  收件箱机制，v1 用 `task_status` / `task_wait`（语义对模型更清晰），推送留作后续演进
+- **排队上限**：未完成任务数有上限，防止模型无节制分发
+
+完整示例见 `examples/async-agent`。
+
 ---
 
 ## 4. 扩展层（tools/）：框架的"可插拔能力"
@@ -519,6 +571,10 @@ func main() {
 | MCP 标准做自定义工具 | 复用生态，用户零成本接入 |
 | 会话历史不存 system 提示词 | system 每次请求时动态插入，方便换提示词 |
 | Hooks / SessionStore 用接口而非硬编码 | 日志、权限、持久化都是"使用方的事"，框架只留扩展点 |
+| 权限拦截、未知工具等永久性错误不重试 | 重试同样的调用不会成功，只会白等退避时间；错误文本回传模型让它改路 |
+| 异步任务靠轮询工具收取结果，不做推送 | Ask 循环是同步的；模型主动 status/wait 语义清晰，推送需要常驻收件箱（留作演进） |
+| JSON 模式在 Anthropic 用系统提示约束 | Anthropic 协议没有统一的 response_format 字段，提示约束是对所有模型生效的通用兜底 |
+| 给 LLM 的工具必须有路径/权限边界 | filesystem 工具限制在 root 内（Rel + EvalSymlinks 双重校验）；工具 panic 由框架 recover 转为错误文本 |
 | Ask 失败自动回滚历史 | 未回答的问题与半截工具轮次不残留，避免污染下次提问 |
 
 **踩过的坑**（写代码时真实遇到的）：
@@ -568,6 +624,8 @@ func main() {
 | 记录对话日志 / 埋点 | 用 `agent.Hooks` 的 `OnMessage` / `OnAfterToolCall` | ⭐ |
 | 禁止 agent 调用某工具 | 用 `agent.Hooks` 的 `OnBeforeToolCall` 拦截 | ⭐ |
 | 会话持久化到数据库 | 实现 `agent.SessionStore` 3 个方法 | ⭐⭐ |
+| 总-分式多 agent（智能客服 / 编码 agent） | 为每个专员场景建独立 Agent，`NewSubagentTool` 注册进父 Registry（见 `examples/customer-service-agent`） | ⭐⭐ |
+| 并行分发后台任务 | `TaskHub` + `task_start` / `task_wait`，主 agent 分发后继续自己的工作（见 `examples/async-agent`） | ⭐⭐ |
 | 让 agent 更聪明 | 改进 `Options.SystemPrompt`（提示词工程） | ⭐ |
 | 上下文压缩 | 历史太长时摘要旧消息（compaction，pi 有成熟实现可借鉴） | ⭐⭐⭐ |
 | 文档问答升级 RAG | 换向量检索（chromem-go 等），`tools/knowledge` 包内部替换 | ⭐⭐⭐ |

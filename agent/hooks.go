@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/capyflow/vortexagent/llm"
 )
@@ -17,6 +18,11 @@ type Hooks struct {
 	// OnMessage 在每条 LLM 回复（含工具调用轮次与最终回答）加入会话后调用。
 	// msg 是模型本轮生成的完整消息，可能携带 ToolCalls。
 	OnMessage func(ctx context.Context, msg llm.Message)
+
+	// OnLLMCall 在每次 LLM 调用返回后调用（成功失败都触发），用于 token 消耗
+	// 统计、延迟监控与调用审计。范围是本 Agent 的 Ask 循环调用——工具执行与
+	// 子 agent 的内部调用不触发（子 agent 如需观测，配置它自己的 Hooks）。
+	OnLLMCall func(ctx context.Context, info LLMCallInfo)
 
 	// OnBeforeToolCall 在工具执行前调用，可用于权限拦截 / 熔断：
 	// 返回非 nil 错误时工具不会执行，错误文本作为工具结果回传给模型，
@@ -33,6 +39,22 @@ type Hooks struct {
 
 	// OnFinish 在 Ask 成功返回最终回答后调用（工具循环已结束）。
 	OnFinish func(ctx context.Context, answer string)
+}
+
+// LLMCallInfo 是一次 LLM 调用的观测信息（OnLLMCall 钩子使用）。
+type LLMCallInfo struct {
+	Model    string        // 实际请求的模型名
+	Round    int           // Ask 循环中的轮次（从 1 开始）
+	Duration time.Duration // 本次调用耗时
+	Usage    llm.Usage     // token 消耗（调用失败时为零值）
+	Err      error         // 非 nil 表示本次调用失败
+}
+
+// fireLLMCall 触发 OnLLMCall 钩子。
+func (a *Agent) fireLLMCall(ctx context.Context, info LLMCallInfo) {
+	if a.hooks != nil && a.hooks.OnLLMCall != nil {
+		a.hooks.OnLLMCall(ctx, info)
+	}
 }
 
 // fireMessage 触发 OnMessage 钩子。

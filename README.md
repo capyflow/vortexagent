@@ -5,12 +5,13 @@
 **工具（Tool）** 与提示词，框架本身与任何具体领域无关。
 
 - **框架核心**：`llm/`（统一 LLM 协议与多厂商适配）、`agent/`（运行时：循环 / 工具 / 会话 / 钩子 / 存储）
-- **内置扩展**：`tools/mcp/`（MCP 客户端，接入任意语言编写的自定义工具）、`tools/knowledge/`（本地文档知识库工具，可选）
+- **内置扩展**：`tools/mcp/`（MCP 客户端，接入任意语言编写的自定义工具）、`tools/knowledge/`（本地文档知识库工具）、`tools/exec/` 与 `tools/filesystem/`（本机执行与文件读写，可经 CLI 的 `tools` 配置启用）
 - **参考应用**：`cmd/vortex/`（通用 REPL CLI）、`examples/`（框架用法示例）
 
 架构设计借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（91k stars 的 TS 编码 agent 工具包）的分层思想。
 
 > **想学 agent 开发？** 两条路：
+> - 想快速了解与上手：[docs/usage.md](docs/usage.md) —— 项目介绍、优点、各功能使用说明
 > - 初学者：从 [docs/tutorial.md](docs/tutorial.md) 开始 —— 10 节课动手搭起自己的 agent
 > - 想理解设计：读 [docs/architecture.md](docs/architecture.md) —— 框架分层原理与设计决策
 > - 文档总入口：[docs/README.md](docs/README.md)
@@ -60,6 +61,8 @@ go run ./cmd/vortex
 export OPENAI_API_KEY=sk-...
 go run ./examples/minimal-agent "现在几点了？"      # 最小 agent（内置时间工具）
 go run ./examples/knowledge-agent "框架支持哪些厂商？" # 文档问答 agent（知识库扩展）
+go run ./examples/customer-service-agent "数据线坏了要退款" # 智能客服 agent（子 agent 编排）
+go run ./examples/async-agent "采购 50 台打印机做评估"    # 异步任务编排（并行分发 + 收取结果）
 go run ./examples/mcp-server                        # MCP server 模板（自定义工具）
 ```
 
@@ -67,7 +70,7 @@ go run ./examples/mcp-server                        # MCP server 模板（自定
 
 ```
 cmd/vortex/        参考应用：通用 REPL CLI（配置驱动，组装框架全部能力）
-examples/          框架用法示例（minimal-agent / knowledge-agent / mcp-server）
+examples/          框架用法示例（minimal / knowledge / customer-service / async / mcp-server）
 ├──────────────────────── 框架核心（你的应用依赖的就是这些包）────────────────────────
 llm/               统一 LLM API
   protocol.go      统一消息/工具/流式协议
@@ -84,6 +87,8 @@ agent/             Agent 运行时
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
 tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
+tools/exec/        shell 命令执行工具（超时封顶、输出安全截断）
+tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权）
 ```
 
 ### Agent 循环（agent/ask.go）
@@ -103,7 +108,11 @@ tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索�
 | `llm.Provider` | 统一 LLM 接口，内置 openai（兼容）/ anthropic / gemini 三个适配器，换厂商只改一行配置 |
 | `agent.New` + `Ask` | 核心循环：多轮工具调度、失败自动回滚历史、空回答防护 |
 | `agent.Tool` + `Registry` | 结构化接口，实现 4 个方法即成为工具；重名保护、确定性工具声明排序 |
-| `agent.Hooks` | 生命周期钩子：`OnMessage` / `OnBeforeToolCall`（可拦截）/ `OnAfterToolCall` / `OnError` / `OnFinish` |
+| `agent.Hooks` | 生命周期钩子：`OnMessage` / `OnLLMCall`（含 token 消耗与耗时）/ `OnBeforeToolCall`（可拦截）/ `OnAfterToolCall` / `OnError` / `OnFinish` |
+| `agent.NewSubagentTool` | 子 agent 原语：把派生好的 Agent 包装成工具，父 agent 委派任务、只回收最终答复，多 agent 编排的基础 |
+| `agent.TaskHub` | 异步任务编排：`task_start` 分发后台任务（goroutine + channel 并发）、主 agent 继续自己的工作，`task_status` / `task_wait` / `task_cancel` 管理任务 |
+| `agent.WithJSONMode` | 结构化输出：要求本次回答只输出合法 JSON（OpenAI/Gemini 原生映射，Anthropic 系统提示约束） |
+| Skill 系统 | `SKILL.md` 发现与加载；`allowed-tools`（工具白名单，双重生效）、`model`、`temperature` 元数据均生效 |
 | `agent.SessionStore` | 会话持久化抽象，内置内存与 JSON 文件实现；接入 SQLite/Redis 只需实现 3 个方法 |
 | `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
 | `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
@@ -118,6 +127,7 @@ tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索�
 | `provider.model` | 模型名称 |
 | `provider.thinking` | 是否启用思考模式（如 DeepSeek R1 / Claude） |
 | `knowledge` | 知识库根目录列表（可选，注册 search/read 工具） |
+| `tools` | 内置工具开关（可选）：`tools.exec` 启用 shell 执行、`tools.filesystem` 启用文件读写（路径限制在 root 内），默认全关 |
 | `mcpServers` | MCP server 列表，启动时自动连接并注册全部工具（可选） |
 | `systemPrompt` | 自定义系统提示词 |
 | `sessionFile` | 会话持久化文件（可选），非空时重启后自动继续上次对话 |
@@ -136,6 +146,11 @@ tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索�
 5. **持久化会话**：设置 `Options.Store`，每次 Ask 自动保存；用 `JSONSessionStore` 可
    实现"重启后继续上次对话"。
 6. **换模型厂商**：`llm.NewProvider` 改 `Name` 即可，循环与工具完全不用改。
+7. **多 agent 编排（子 agent）**：为不同专员场景各建一个 Agent（独立系统提示词与工具箱），
+   用 `agent.NewSubagentTool`（同步委派，当轮拿结果）或 `agent.TaskHub`（异步分发，
+   主 agent 继续自己的工作、稍后收结果）注册进总机 agent 的 Registry——智能客服、
+   编码 agent 的"总-分"结构由此衍生（见 `examples/customer-service-agent` 与
+   `examples/async-agent`）。
 
 ## 开发
 

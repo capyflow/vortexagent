@@ -24,9 +24,9 @@ const (
 // allow: SIZE_OK — 单个 OpenAI 协议适配器（请求体/流式/非流式/工具调用/wire 类型），
 // 任务要求集中在 llm/openai.go 单个文件内交付，拆分会破坏既定文件布局。
 type OpenAIProvider struct {
-	apiKey      string
-	baseURL     string
-	client      *http.Client
+	apiKey        string
+	baseURL       string
+	client        *http.Client
 	model         string
 	maxTokens     int
 	temperature   *float64
@@ -62,8 +62,8 @@ func NewOpenAIProvider(apiKey string, opts ...ProviderOption) *OpenAIProvider {
 	return p
 }
 
-func (p *OpenAIProvider) Name() string           { return "openai" }
-func (p *OpenAIProvider) ContextWindow() int      { return p.contextWindow }
+func (p *OpenAIProvider) Name() string       { return "openai" }
+func (p *OpenAIProvider) ContextWindow() int { return p.contextWindow }
 
 // 编译期校验 OpenAIProvider 满足 Provider 接口。
 var _ Provider = (*OpenAIProvider)(nil)
@@ -118,6 +118,9 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest, onDelta fun
 	wire.MaxTokens = req.MaxTokens
 	if wire.MaxTokens == 0 {
 		wire.MaxTokens = p.maxTokens
+	}
+	if req.JSONMode {
+		wire.ResponseFormat = &wireResponseFormat{Type: "json_object"}
 	}
 
 	streaming := onDelta != nil
@@ -418,12 +421,18 @@ func imageDataURL(c Content) (string, error) {
 
 // wireChatRequest 是请求体的 wire 形态。
 type wireChatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []wireChatMessage `json:"messages"`
-	Tools       []wireToolDecl    `json:"tools,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Model          string              `json:"model"`
+	Messages       []wireChatMessage   `json:"messages"`
+	Tools          []wireToolDecl      `json:"tools,omitempty"`
+	Stream         bool                `json:"stream,omitempty"`
+	Temperature    *float64            `json:"temperature,omitempty"`
+	MaxTokens      int                 `json:"max_tokens,omitempty"`
+	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
+}
+
+// wireResponseFormat 是 OpenAI 的 response_format 字段（JSON 模式映射到这里）。
+type wireResponseFormat struct {
+	Type string `json:"type"`
 }
 
 // wireChatMessage 是请求体单条消息的 wire 形态，content 可能是字符串或数组。

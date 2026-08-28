@@ -29,6 +29,8 @@ import (
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
+	"github.com/capyflow/vortexagent/tools/exec"
+	"github.com/capyflow/vortexagent/tools/filesystem"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 	"github.com/capyflow/vortexagent/tools/mcp"
 )
@@ -100,8 +102,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. 注册工具：知识库 + MCP
+	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP
 	registry := agent.NewRegistry()
+	if cfg.Tools != nil {
+		registerBuiltinTools(registry, cfg.Tools)
+	}
 	if len(cfg.Knowledge) > 0 {
 		kb := knowledge.NewKB(cfg.Knowledge)
 		for _, t := range knowledge.NewKBTools(kb) {
@@ -272,6 +277,39 @@ func main() {
 	}
 }
 
+// registerBuiltinTools 按配置注册内置工具（exec / filesystem）。
+func registerBuiltinTools(registry *agent.Registry, cfg *ToolsConfig) {
+	if cfg.Exec != nil && cfg.Exec.Enabled {
+		workdir := cfg.Exec.Workdir
+		if workdir == "" {
+			workdir = "."
+		}
+		if err := registry.Add(exec.NewExecTool(workdir)); err != nil {
+			fmt.Fprintln(os.Stderr, "警告:", err)
+		} else {
+			fmt.Printf("已启用内置工具: exec_command（工作目录 %s，建议配合权限钩子限制命令）\n", workdir)
+		}
+	}
+	if cfg.Filesystem != nil && cfg.Filesystem.Enabled {
+		root := cfg.Filesystem.Root
+		if root == "" {
+			root = "."
+		}
+		tools := []agent.Tool{
+			filesystem.NewReadFileTool(root),
+			filesystem.NewWriteFileTool(root),
+			filesystem.NewEditFileTool(root),
+			filesystem.NewListFilesTool(root),
+		}
+		for _, t := range tools {
+			if err := registry.Add(t); err != nil {
+				fmt.Fprintln(os.Stderr, "警告:", err)
+			}
+		}
+		fmt.Printf("已启用内置工具: read_file / write_file / edit_file / list_files（根目录 %s）\n", root)
+	}
+}
+
 // handleCommand 处理斜杠命令，返回 (是否已处理, 是否退出)。
 func handleCommand(line string, session *sessionstore.Session, store sessionstore.Store, registry *agent.Registry, exit *bool) bool {
 	switch {
@@ -352,7 +390,7 @@ func handleNewSession(current *sessionstore.Session, store sessionstore.Store) {
 			return
 		}
 	}
-	*current = *newSess
+	current.Reset(newSess)
 	fmt.Printf("已创建新会话: %s\n", current.ID)
 }
 
@@ -375,7 +413,7 @@ func handleSwitchSession(current *sessionstore.Session, store sessionstore.Store
 		fmt.Printf("会话不存在: %s\n", id)
 		return
 	}
-	*current = *sess
+	current.Reset(sess)
 	fmt.Printf("已切换到会话: %s（%d 条历史）\n", current.ID, len(current.History))
 }
 

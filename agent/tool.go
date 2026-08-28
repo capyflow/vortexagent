@@ -49,8 +49,8 @@ type ToolOverview struct {
 
 // Registry 是工具注册表，维护名称到工具的映射。
 type Registry struct {
-	tools            map[string]Tool
-	progressiveMode  bool // 是否启用渐进式披露模式
+	tools           map[string]Tool
+	progressiveMode bool // 是否启用渐进式披露模式
 }
 
 // NewRegistry 创建一个空注册表。
@@ -126,11 +126,11 @@ func (r *Registry) Params() []llm.ToolParam {
 	return params
 }
 
-// Call 调用工具，未知工具返回错误。
+// Call 调用工具，未知工具返回错误（标记为不可重试：换参数才有意义，原样重试无意义）。
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (string, error) {
 	t, ok := r.tools[name]
 	if !ok {
-		return "", fmt.Errorf("agent: 未知工具 %q", name)
+		return "", &nonRetryableError{fmt.Errorf("agent: 未知工具 %q", name)}
 	}
 	return t.Call(ctx, args)
 }
@@ -157,7 +157,7 @@ func (r *Registry) Overviews() []ToolOverview {
 func (r *Registry) GetFullSchema(name string) (map[string]any, error) {
 	t, ok := r.tools[name]
 	if !ok {
-		return nil, fmt.Errorf("agent: 未知工具 %q", name)
+		return nil, &nonRetryableError{fmt.Errorf("agent: 未知工具 %q", name)}
 	}
 	return map[string]any{
 		"name":        t.Name(),

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/capyflow/vortexagent/agent"
+	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/server"
 	"github.com/capyflow/vortexagent/tools/knowledge"
@@ -78,6 +79,22 @@ func main() {
 		fmt.Printf("已加载知识库: %s\n", strings.Join(cfg.Knowledge, ", "))
 	}
 
+	// 会话持久化（可选）：配置 session.type=json 后，会话跨重启保留
+	var store sessionstore.Store
+	if cfg.Session.Type == "json" {
+		if cfg.Session.File == "" {
+			fmt.Fprintln(os.Stderr, "错误: session.type=json 但未配置 session.file")
+			os.Exit(1)
+		}
+		jsonStore, jerr := sessionstore.NewJSON(expandPath(cfg.Session.File))
+		if jerr != nil {
+			fmt.Fprintln(os.Stderr, "错误:", jerr)
+			os.Exit(1)
+		}
+		store = jsonStore
+		fmt.Printf("会话持久化: %s\n", cfg.Session.File)
+	}
+
 	ag := agent.New(agent.Options{
 		Provider:     provider,
 		Registry:     registry,
@@ -91,6 +108,7 @@ func main() {
 	srv := server.New(server.Config{
 		Addr:  *addr,
 		Agent: ag,
+		Store: store,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -120,8 +138,17 @@ type Config struct {
 		Temperature *float64 `json:"temperature,omitempty"`
 		Thinking    bool     `json:"thinking,omitempty"`
 	} `json:"provider"`
-	Knowledge    []string `json:"knowledge,omitempty"`
-	SystemPrompt string   `json:"systemPrompt,omitempty"`
+	Knowledge    []string      `json:"knowledge,omitempty"`
+	SystemPrompt string        `json:"systemPrompt,omitempty"`
+	Session      SessionConfig `json:"session,omitempty"`
+}
+
+// SessionConfig 会话持久化配置（与 vortex CLI 的同名配置一致）。
+type SessionConfig struct {
+	// Type 存储类型：memory（默认，不持久化）/ json
+	Type string `json:"type"`
+	// File JSON 存储文件路径（Type=json 时使用）
+	File string `json:"file"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -147,6 +174,15 @@ func defaultAPIKeyEnv(name string) string {
 	default:
 		return "OPENAI_API_KEY"
 	}
+}
+
+// expandPath 展开 ~ 前缀的路径。
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
+	}
+	return path
 }
 
 func loadDotEnv(path string) error {

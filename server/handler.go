@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -40,6 +41,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	sess := s.getOrCreateSession(req.SessionID)
 
+	// 同一会话串行化：并发 Ask 会交错追加历史、污染上下文。
+	mu := s.lockFor(sess.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	answer, err := s.agent.Ask(r.Context(), sess, req.Message)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ChatResponse{
@@ -49,6 +55,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.saveSession(sess)
+
 	writeJSON(w, http.StatusOK, ChatResponse{
 		SessionID: sess.ID,
 		Answer:    answer,
@@ -56,18 +64,26 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := make([]SessionResponse, 0)
+
+	if s.store != nil {
+		// 配置了持久化时以存储为准（含其他实例写入的会话）。
+		stored, err := s.store.List(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		for _, sess := range stored {
+			sessions = append(sessions, toSessionResponse(sess, sess.MessageCount()))
+		}
+		writeJSON(w, http.StatusOK, sessions)
+		return
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	sessions := make([]SessionResponse, 0, len(s.sessions))
 	for _, sess := range s.sessions {
-		sessions = append(sessions, SessionResponse{
-			ID:        sess.ID,
-			Model:     sess.Model,
-			Messages:  len(sess.History),
-			CreatedAt: sess.CreatedAt.Format("2006-01-02 15:04:05"),
-			UpdatedAt: sess.UpdatedAt.Format("2006-01-02 15:04:05"),
-		})
+		sessions = append(sessions, toSessionResponse(sess, sess.MessageCount()))
 	}
 
 	writeJSON(w, http.StatusOK, sessions)
@@ -83,14 +99,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	sess := sessionstore.NewSession(req.Model)
 	s.setSession(sess.ID, sess)
+	s.saveSession(sess)
 
-	writeJSON(w, http.StatusCreated, SessionResponse{
-		ID:        sess.ID,
-		Model:     sess.Model,
-		Messages:  0,
-		CreatedAt: sess.CreatedAt.Format("2006-01-02 15:04:05"),
-		UpdatedAt: sess.UpdatedAt.Format("2006-01-02 15:04:05"),
-	})
+	writeJSON(w, http.StatusCreated, toSessionResponse(sess, 0))
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -101,19 +112,45 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.deleteSession(id)
+	if s.store != nil {
+		if err := s.store.Delete(context.Background(), id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "已删除"})
 }
 
+// getOrCreateSession 返回内存中的会话；未命中且配置了 Store 时从存储恢复，
+// 否则创建新会话。
 func (s *Server) getOrCreateSession(id string) *sessionstore.Session {
 	if id != "" {
 		if sess := s.getSession(id); sess != nil {
 			return sess
 		}
+		if s.store != nil {
+			loaded, err := s.store.Load(context.Background(), id)
+			if err == nil && loaded != nil {
+				s.setSession(loaded.ID, loaded)
+				return loaded
+			}
+		}
 	}
 
 	sess := sessionstore.NewSession("default")
 	s.setSession(sess.ID, sess)
+	s.saveSession(sess)
 	return sess
+}
+
+func toSessionResponse(sess *sessionstore.Session, messageCount int) SessionResponse {
+	return SessionResponse{
+		ID:        sess.ID,
+		Model:     sess.Model,
+		Messages:  messageCount,
+		CreatedAt: sess.CreatedAt.Format("2006-01-02 15:04:05"),
+		UpdatedAt: sess.UpdatedAt.Format("2006-01-02 15:04:05"),
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

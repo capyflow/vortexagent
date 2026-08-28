@@ -14,8 +14,8 @@ type mockProvider struct {
 	callCount int
 }
 
-func (m *mockProvider) Name() string              { return "mock" }
-func (m *mockProvider) ContextWindow() int         { return 128000 }
+func (m *mockProvider) Name() string       { return "mock" }
+func (m *mockProvider) ContextWindow() int { return 128000 }
 
 func (m *mockProvider) Chat(ctx context.Context, req *llm.ChatRequest, onDelta func(llm.Delta) error) (*llm.ChatResponse, error) {
 	if m.callCount < len(m.responses) {
@@ -158,5 +158,46 @@ func TestContextManager_MultipleOffloads(t *testing.T) {
 
 	if len(session.Offloaded) != 2 {
 		t.Fatalf("expected 2 offloaded chunks, got %d", len(session.Offloaded))
+	}
+
+	// 多次卸载后 StartIdx 应按"原始完整历史"累计，而不是每次都从 0 开始
+	if session.Offloaded[1].StartIdx != session.Offloaded[0].MsgCount {
+		t.Errorf("第二次卸载 StartIdx = %d, 期望 %d（前一块的 MsgCount）",
+			session.Offloaded[1].StartIdx, session.Offloaded[0].MsgCount)
+	}
+}
+
+// TestContextManager_ConcurrentAddAndOffload 校验卸载与写入并发时的锁正确性
+// （数据竞争由 -race 检出；本测试只保证语义上历史条数不越界）。
+func TestContextManager_ConcurrentAddAndOffload(t *testing.T) {
+	session := sessionstore.NewSession("test")
+	provider := &mockProvider{}
+	cm := NewContextManager(session, nil, provider, &ContextManagerConfig{
+		MaxActiveMessages: 4,
+		OffloadThreshold:  6,
+		ContextWindow:     0, // 走消息数阈值路径
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			session.Add(llm.NewTextMessage(llm.RoleUser, fmt.Sprintf("并发消息 %d", i)))
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		_ = cm.Offload(context.Background())
+		_ = cm.EstimateTokens()
+		_ = cm.BuildMessages()
+	}
+	<-done
+
+	// 并发结束后做最后一次卸载：活跃历史应收敛到 MaxActiveMessages。
+	// 锁的正确性由 -race 检出，这里只断言语义。
+	if err := cm.Offload(context.Background()); err != nil {
+		t.Fatalf("Offload 失败: %v", err)
+	}
+	if count := session.MessageCount(); count > 4 {
+		t.Errorf("卸载后活跃历史 = %d, 期望不超过 MaxActiveMessages(4)", count)
 	}
 }
