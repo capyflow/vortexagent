@@ -37,6 +37,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	sess := s.getOrCreateSession(req.SessionID)
 
+	// 与 /chat 相同的会话级串行化：流式期间锁住会话，防止并发请求交错写历史。
+	mu := s.lockFor(sess.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	sendEvent := func(event StreamEvent) error {
 		data, _ := json.Marshal(event)
 		fmt.Fprintf(w, "data: %s\n\n", data)
@@ -55,6 +60,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	ag := s.agent.WithDelta(onDelta)
 	answer, answerErr = ag.Ask(r.Context(), sess, req.Message)
+
+	s.saveSession(sess)
 
 	if answerErr != nil {
 		sendEvent(StreamEvent{Type: "error", Text: answerErr.Error()})
