@@ -352,7 +352,7 @@ func handleNewSession(current *sessionstore.Session, store sessionstore.Store) {
 			return
 		}
 	}
-	*current = *newSess
+	current.Reset(newSess)
 	fmt.Printf("已创建新会话: %s\n", current.ID)
 }
 
@@ -375,7 +375,7 @@ func handleSwitchSession(current *sessionstore.Session, store sessionstore.Store
 		fmt.Printf("会话不存在: %s\n", id)
 		return
 	}
-	*current = *sess
+	current.Reset(sess)
 	fmt.Printf("已切换到会话: %s（%d 条历史）\n", current.ID, len(current.History))
 }
 

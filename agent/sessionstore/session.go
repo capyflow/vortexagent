@@ -92,6 +92,24 @@ func (s *Session) Rollback(n int) {
 	s.UpdatedAt = time.Now()
 }
 
+// Reset 用 other 的内容替换当前会话的内容（切换 / 新建会话时使用）。
+// 只拷贝业务字段，不拷贝内部锁——直接对 Session 取值赋值会连 sync.RWMutex 一起拷贝。
+func (s *Session) Reset(other *Session) {
+	if other == nil {
+		return
+	}
+	other.mu.RLock()
+	defer other.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ID = other.ID
+	s.Model = other.Model
+	s.History = other.History
+	s.Offloaded = other.Offloaded
+	s.CreatedAt = other.CreatedAt
+	s.UpdatedAt = other.UpdatedAt
+}
+
 func (s *Session) AddOffloaded(chunk OffloadedChunk) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
