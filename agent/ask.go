@@ -121,14 +121,14 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 		}
 
 		if a.parallelTools && len(resp.Message.ToolCalls) > 1 {
-			a.execToolsParallel(ctx, session, resp.Message.ToolCalls)
+			a.execToolsParallel(ctx, session, resp.Message.ToolCalls, cfg.skill)
 		} else {
 			for _, call := range resp.Message.ToolCalls {
 				if err := ctx.Err(); err != nil {
 					session.Rollback(baseLen)
 					return "", err
 				}
-				result, callErr := a.execToolWithRetry(ctx, call)
+				result, callErr := a.execToolWithRetry(ctx, call, cfg.skill)
 				if callErr != nil {
 					result = fmt.Sprintf("工具执行出错: %v", callErr)
 				}
@@ -161,6 +161,10 @@ func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *as
 	if a.maxTokens > 0 {
 		req.MaxTokens = a.maxTokens
 	}
+	// Skill 元数据生效：allowed-tools 过滤工具声明，temperature 覆盖采样温度。
+	if cfg.skill != nil && cfg.skill.Metadata.Temperature != nil {
+		req.Temperature = cfg.skill.Metadata.Temperature
+	}
 	if a.registry != nil {
 		if a.registry.IsProgressiveMode() {
 			// 渐进式披露模式：发送极简描述 + get_tool_schema 工具
@@ -169,6 +173,7 @@ func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *as
 			// 传统模式：发送完整工具定义
 			req.Tools = a.registry.Params()
 		}
+		req.Tools = filterToolsByAllowed(req.Tools, cfg.skill)
 	}
 
 	var onDelta func(llm.Delta) error
@@ -189,9 +194,14 @@ func (e *nonRetryableError) Error() string { return e.err.Error() }
 func (e *nonRetryableError) Unwrap() error { return e.err }
 
 // execTool 执行单个工具调用并返回结果文本。
-func (a *Agent) execTool(ctx context.Context, call llm.ToolCall) (string, error) {
+func (a *Agent) execTool(ctx context.Context, call llm.ToolCall, skill *Skill) (string, error) {
 	if a.registry == nil {
 		return "", &nonRetryableError{fmt.Errorf("未注册任何工具")}
+	}
+	if !toolAllowedBySkill(call.Name, skill) {
+		return "", &nonRetryableError{fmt.Errorf(
+			"工具 %q 不在当前技能 %q 的允许列表内（allowed-tools: %s）",
+			call.Name, skill.Metadata.Name, strings.Join(skill.Metadata.AllowedTools, ", "))}
 	}
 	if a.hooks != nil && a.hooks.OnBeforeToolCall != nil {
 		if err := a.hooks.OnBeforeToolCall(ctx, call.Name, call.Arguments); err != nil {
@@ -199,6 +209,39 @@ func (a *Agent) execTool(ctx context.Context, call llm.ToolCall) (string, error)
 		}
 	}
 	return a.callWithRecover(ctx, call)
+}
+
+// toolAllowedBySkill 判断工具是否被当前技能允许：
+// 未指定技能或 allowed-tools 为空时不限制；get_tool_schema 是渐进式披露的
+// 基础设施工具，始终放行。
+func toolAllowedBySkill(name string, skill *Skill) bool {
+	if skill == nil || len(skill.Metadata.AllowedTools) == 0 {
+		return true
+	}
+	if name == "get_tool_schema" {
+		return true
+	}
+	for _, allowed := range skill.Metadata.AllowedTools {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
+}
+
+// filterToolsByAllowed 按技能的 allowed-tools 过滤发给模型的工具声明
+// （未指定技能或列表为空时不限制）。
+func filterToolsByAllowed(tools []llm.ToolParam, skill *Skill) []llm.ToolParam {
+	if skill == nil || len(skill.Metadata.AllowedTools) == 0 {
+		return tools
+	}
+	out := make([]llm.ToolParam, 0, len(tools))
+	for _, t := range tools {
+		if toolAllowedBySkill(t.Name, skill) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // callWithRecover 把工具实现的 panic 转为错误文本：工具可能来自任意 MCP server
@@ -215,7 +258,7 @@ func (a *Agent) callWithRecover(ctx context.Context, call llm.ToolCall) (result 
 }
 
 // execToolWithRetry 带重试的工具执行
-func (a *Agent) execToolWithRetry(ctx context.Context, call llm.ToolCall) (string, error) {
+func (a *Agent) execToolWithRetry(ctx context.Context, call llm.ToolCall, skill *Skill) (string, error) {
 	maxRetries := a.maxRetries
 	if maxRetries <= 0 {
 		maxRetries = 3
@@ -227,7 +270,7 @@ func (a *Agent) execToolWithRetry(ctx context.Context, call llm.ToolCall) (strin
 			return "", err
 		}
 
-		result, err := a.execTool(ctx, call)
+		result, err := a.execTool(ctx, call, skill)
 		if err == nil {
 			return result, nil
 		}
@@ -252,7 +295,7 @@ func (a *Agent) execToolWithRetry(ctx context.Context, call llm.ToolCall) (strin
 }
 
 // execToolsParallel 并行执行多个工具调用，结果按原始顺序追加到会话。
-func (a *Agent) execToolsParallel(ctx context.Context, session *sessionstore.Session, calls []llm.ToolCall) {
+func (a *Agent) execToolsParallel(ctx context.Context, session *sessionstore.Session, calls []llm.ToolCall, skill *Skill) {
 	type toolResult struct {
 		index  int
 		call   llm.ToolCall
@@ -271,7 +314,7 @@ func (a *Agent) execToolsParallel(ctx context.Context, session *sessionstore.Ses
 				results[idx] = toolResult{index: idx, call: tc, err: err}
 				return
 			}
-			result, callErr := a.execToolWithRetry(ctx, tc)
+			result, callErr := a.execToolWithRetry(ctx, tc, skill)
 			if callErr != nil {
 				result = fmt.Sprintf("工具执行出错: %v", callErr)
 			}

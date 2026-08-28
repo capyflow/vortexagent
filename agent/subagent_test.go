@@ -272,7 +272,7 @@ func TestAsk_NonRetryableNoBackoff(t *testing.T) {
 	for _, name := range []string{"no-such-tool", "blocked"} {
 		call := llm.ToolCall{ID: "c1", Name: name}
 		start := time.Now()
-		_, err := ag.execToolWithRetry(context.Background(), call)
+		_, err := ag.execToolWithRetry(context.Background(), call, nil)
 		if err == nil {
 			t.Fatalf("%s 应返回错误", name)
 		}

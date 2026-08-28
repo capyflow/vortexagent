@@ -148,6 +148,90 @@ func TestWithoutSkill(t *testing.T) {
 	}
 }
 
+// TestSkill_AllowedToolsEnforced 校验 allowed-tools 双重生效：
+// 模型只看到允许列表内的工具声明；越权调用也会被拦截且不执行。
+func TestSkill_AllowedToolsEnforced(t *testing.T) {
+	echo := &echoTool{}
+	secret := &namedToolWithCount{namedTool: namedTool{name: "secret"}}
+	registry := NewRegistry()
+	if err := registry.Add(echo); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Add(secret); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &scriptProvider{name: "skill", script: []llm.ChatResponse{
+		toolCallResp("secret", map[string]any{}),
+		textResp("收到错误后收尾"),
+	}}
+	skill := &Skill{
+		Metadata: SkillMetadata{
+			Name:         "limited",
+			AllowedTools: []string{"echo"},
+		},
+	}
+	ag := New(Options{Provider: provider, Registry: registry, Model: "m"})
+
+	_, err := ag.Ask(context.Background(), sessionstore.NewSession("m"), "触发", WithSkill(skill))
+	if err != nil {
+		t.Fatalf("越权调用应回传错误文本而非 Ask 失败: %v", err)
+	}
+	if secret.CallCount() != 0 {
+		t.Errorf("越权工具不应被执行，实际 %d 次", secret.CallCount())
+	}
+
+	// 工具声明应被过滤：模型只看到 echo
+	declared := map[string]bool{}
+	for _, t2 := range provider.lastReq.Tools {
+		declared[t2.Name] = true
+	}
+	if !declared["echo"] || declared["secret"] {
+		t.Errorf("工具声明应只包含 echo: %v", declared)
+	}
+}
+
+// TestSkill_ModelAndTemperature 校验 skill 的 model 与 temperature 覆盖请求参数。
+func TestSkill_ModelAndTemperature(t *testing.T) {
+	provider := &mockProviderForSkill{
+		response: &llm.ChatResponse{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.Content{{Type: llm.ContentText, Text: "ok"}}},
+		},
+	}
+	ag := New(Options{Provider: provider, Model: "default-model"})
+	temp := 0.2
+	skill := &Skill{
+		Metadata: SkillMetadata{
+			Name:        "review",
+			Model:       "skill-model",
+			Temperature: &temp,
+		},
+	}
+
+	if _, err := ag.Ask(context.Background(), sessionstore.NewSession("m"), "问题", WithSkill(skill)); err != nil {
+		t.Fatal(err)
+	}
+	if provider.lastRequest.Model != "skill-model" {
+		t.Errorf("请求模型 = %q, 期望 skill-model", provider.lastRequest.Model)
+	}
+	if provider.lastRequest.Temperature == nil || *provider.lastRequest.Temperature != 0.2 {
+		t.Errorf("请求温度 = %v, 期望 0.2", provider.lastRequest.Temperature)
+	}
+}
+
+// namedToolWithCount 是带调用计数的命名工具。
+type namedToolWithCount struct {
+	namedTool
+	calls int
+}
+
+func (t *namedToolWithCount) Call(ctx context.Context, args map[string]any) (string, error) {
+	t.calls++
+	return t.namedTool.Call(ctx, args)
+}
+
+func (t *namedToolWithCount) CallCount() int { return t.calls }
+
 type mockProviderForSkill struct {
 	response    *llm.ChatResponse
 	lastRequest *llm.ChatRequest
