@@ -11,6 +11,7 @@
 架构设计借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（91k stars 的 TS 编码 agent 工具包）的分层思想。
 
 > **想学 agent 开发？** 两条路：
+> - 想快速了解与上手：[docs/usage.md](docs/usage.md) —— 项目介绍、优点、各功能使用说明
 > - 初学者：从 [docs/tutorial.md](docs/tutorial.md) 开始 —— 10 节课动手搭起自己的 agent
 > - 想理解设计：读 [docs/architecture.md](docs/architecture.md) —— 框架分层原理与设计决策
 > - 文档总入口：[docs/README.md](docs/README.md)

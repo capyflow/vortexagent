@@ -4,21 +4,27 @@
 
 | 文档 | 适合谁 | 内容 |
 |------|--------|------|
+| [usage.md](usage.md) | **想快速了解与上手的人** | 项目是什么、优点、各功能使用说明、典型场景配方 |
 | [tutorial.md](tutorial.md) | **初学者**（没写过 agent） | 从零动手：10 节课搭起自己的 agent，每课可运行、可练习 |
 | [architecture.md](architecture.md) | 想理解设计原理的人 | 框架分层（核心 / 扩展 / 应用）、每个包的职责、关键设计决策与踩坑记录 |
+| [guide.md](guide.md) | 开发者 | 开发指南与 API 参考 |
 | [../README.md](../README.md) | 所有使用者 | 快速开始、配置参考、扩展指南、测试策略 |
 
-**建议路径**：先按 [tutorial.md](tutorial.md) 动手跑通 → 再读
-[architecture.md](architecture.md) 理解为什么这么设计 → 最后回到 README 看完整能力清单。
+**建议路径**：先读 [usage.md](usage.md) 了解全貌 → 按 [tutorial.md](tutorial.md) 动手跑通 →
+再读 [architecture.md](architecture.md) 理解为什么这么设计 → 最后回到 README 看完整能力清单。
 
 ## 代码地图
 
 ```
 llm/              统一 LLM 协议 + 多厂商适配器（openai / anthropic / gemini）
-agent/            Agent 运行时：循环（ask.go）、工具（tool.go）、会话（session.go）、
-                  钩子（hooks.go）、存储（store.go）
+agent/            Agent 运行时：循环（ask.go）、工具（tool.go）、子 agent（subagent.go）、
+                  异步任务（taskhub.go）、钩子（hooks.go）、Skill（skill.go）、
+                  会话与存储（sessionstore/）
 tools/mcp/        MCP 客户端：接入任意语言编写的自定义工具
 tools/knowledge/  知识库扩展：文档检索工具（可选）
+tools/exec/       shell 命令执行工具（可经 CLI 配置启用）
+tools/filesystem/ 文件读写工具组（路径边界防护，可经 CLI 配置启用）
 cmd/vortex/       参考 CLI：通用 REPL agent（应用层示例）
-examples/         用法示例：minimal-agent / knowledge-agent / mcp-server
+cmd/vortex-serve/ HTTP/SSE 服务模式入口
+examples/         用法示例：minimal / knowledge / customer-service / async / mcp-server
 ```
