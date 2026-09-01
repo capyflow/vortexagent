@@ -108,6 +108,7 @@ func main() {
 	})
 
 	var autoAgent *autonomous.AutonomousAgent
+	var webhookSecret string
 	if cfg.Autonomous != nil && cfg.Autonomous.Enabled {
 		goalStore, err := autonomous.NewJSONGoalStore(expandPath(cfg.Autonomous.GoalStore.File))
 		if err != nil {
@@ -124,20 +125,33 @@ func main() {
 		})
 
 		for _, g := range cfg.Autonomous.Goals {
-			goal := goalFromConfig(g)
-			if goal != nil {
-				autoAgent.AddGoal(goal)
+			goal, err := goalFromConfig(g)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "警告: 跳过无效的自治目标配置 %q: %v\n", g.Title, err)
+				continue
 			}
+			if err := autoAgent.AddGoal(goal); err != nil {
+				fmt.Fprintf(os.Stderr, "警告: 添加目标 %q 失败: %v\n", goal.Title, err)
+			}
+		}
+
+		webhookSecret = cfg.Autonomous.WebhookSecret
+		if webhookSecret == "" {
+			webhookSecret = os.Getenv("VORTEX_WEBHOOK_SECRET")
+		}
+		if webhookSecret == "" {
+			fmt.Println("警告: 未设置 VORTEX_WEBHOOK_SECRET，/webhook/ 仅允许本机来源访问")
 		}
 
 		fmt.Printf("自治 agent 已启用（目标存储: %s）\n", cfg.Autonomous.GoalStore.File)
 	}
 
 	srv := server.New(server.Config{
-		Addr:       *addr,
-		Agent:      ag,
-		Autonomous: autoAgent,
-		Store:      store,
+		Addr:          *addr,
+		Agent:         ag,
+		Autonomous:    autoAgent,
+		Store:         store,
+		WebhookSecret: webhookSecret,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -175,9 +189,9 @@ type Config struct {
 		Temperature *float64 `json:"temperature,omitempty"`
 		Thinking    bool     `json:"thinking,omitempty"`
 	} `json:"provider"`
-	Knowledge    []string         `json:"knowledge,omitempty"`
-	SystemPrompt string           `json:"systemPrompt,omitempty"`
-	Session      SessionConfig    `json:"session,omitempty"`
+	Knowledge    []string          `json:"knowledge,omitempty"`
+	SystemPrompt string            `json:"systemPrompt,omitempty"`
+	Session      SessionConfig     `json:"session,omitempty"`
 	Autonomous   *AutonomousConfig `json:"autonomous,omitempty"`
 }
 
@@ -190,10 +204,11 @@ type SessionConfig struct {
 }
 
 type AutonomousConfig struct {
-	Enabled     bool              `json:"enabled"`
-	MaxSleepMin int               `json:"max_sleep_minutes"`
-	GoalStore   GoalStoreConfig   `json:"goal_store"`
-	Goals       []GoalConfig      `json:"goals"`
+	Enabled       bool            `json:"enabled"`
+	MaxSleepMin   int             `json:"max_sleep_minutes"`
+	GoalStore     GoalStoreConfig `json:"goal_store"`
+	Goals         []GoalConfig    `json:"goals"`
+	WebhookSecret string          `json:"webhook_secret,omitempty"`
 }
 
 type GoalStoreConfig struct {
@@ -269,9 +284,12 @@ func loadDotEnv(path string) error {
 	return nil
 }
 
-func goalFromConfig(c GoalConfig) *autonomous.Goal {
-	if c.Title == "" || c.ScheduleType == "" {
-		return nil
+func goalFromConfig(c GoalConfig) (*autonomous.Goal, error) {
+	if c.Title == "" {
+		return nil, fmt.Errorf("缺少 title")
+	}
+	if c.ScheduleType == "" {
+		return nil, fmt.Errorf("缺少 schedule_type")
 	}
 
 	g := autonomous.NewGoal()
@@ -307,12 +325,12 @@ func goalFromConfig(c GoalConfig) *autonomous.Goal {
 		trigger := &autonomous.CronTrigger{Expr: g.Schedule.Cron}
 		next, err := trigger.NextRun(time.Now())
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("无效的 cron 表达式 %q: %w", g.Schedule.Cron, err)
 		}
 		g.NextRunAt = next
 	default:
-		return nil
+		return nil, fmt.Errorf("未知的 schedule_type %q", c.ScheduleType)
 	}
 
-	return g
+	return g, nil
 }

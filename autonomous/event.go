@@ -2,9 +2,12 @@ package autonomous
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +17,9 @@ import (
 )
 
 // FileWatcher 监听文件变化并发送事件。
+//
+// TODO: 尚未接入 vortex-serve 启动流程（当前生产路径仅有 webhook 事件）；
+// 接线时需要在目标配置中定义监听模式，并随目标增删同步 watch 列表。
 type FileWatcher struct {
 	mu       sync.Mutex
 	watches  map[string]string // goalID -> glob pattern
@@ -130,12 +136,19 @@ func (w *FileWatcher) checkFiles(modTimes map[string]time.Time) {
 
 // WebhookHandler 处理外部 webhook 请求。
 type WebhookHandler struct {
-	emit func(Event)
+	emit   func(Event) error
+	secret string // 非空时要求请求头 X-Webhook-Secret 匹配
 }
 
+// webhookMaxBodySize 是 webhook 请求体大小上限。
+const webhookMaxBodySize = 1 << 20 // 1MB
+
 // NewWebhookHandler 创建 webhook 处理器。
-func NewWebhookHandler(emit func(Event)) *WebhookHandler {
-	return &WebhookHandler{emit: emit}
+// emit 负责投递事件，返回 error 时以 503 响应（表示事件未被消费）。
+// secret 非空时校验请求头 X-Webhook-Secret（constant-time 比较）；
+// 为空时仅允许 loopback 来源，防止外部未鉴权触发目标执行。
+func NewWebhookHandler(emit func(Event) error, secret string) *WebhookHandler {
+	return &WebhookHandler{emit: emit, secret: secret}
 }
 
 // ServeHTTP 实现 http.Handler 接口。
@@ -144,6 +157,11 @@ func NewWebhookHandler(emit func(Event)) *WebhookHandler {
 func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -156,9 +174,17 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 限制请求体大小，防止恶意大包耗尽内存
+	r.Body = http.MaxBytesReader(w, r.Body, webhookMaxBodySize)
+
 	// 解析请求体
 	var data map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "请求体超过大小限制", http.StatusRequestEntityTooLarge)
+			return
+		}
 		// 空 body 也允许
 		data = make(map[string]any)
 	}
@@ -175,13 +201,35 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	}
 
-	h.emit(event)
+	// 投递失败（如事件通道超时被丢弃）时如实返回 503，让调用方知道事件未被消费
+	if err := h.emit(event); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status": "ok",
 		"event":  eventType,
 	})
+}
+
+// authorized 校验请求来源：
+// 配置了 secret 时要求请求头 X-Webhook-Secret 匹配；
+// 未配置时仅允许 loopback 来源。
+func (h *WebhookHandler) authorized(r *http.Request) bool {
+	if h.secret != "" {
+		return subtle.ConstantTimeCompare(
+			[]byte(r.Header.Get("X-Webhook-Secret")),
+			[]byte(h.secret),
+		) == 1
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // formatWebhookEvent 格式化 webhook 事件数据为可读字符串。

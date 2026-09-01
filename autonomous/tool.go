@@ -4,20 +4,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/capyflow/vortexagent/agent"
+	"github.com/google/uuid"
 )
 
 // ─── 自治工具 ───
 
-// goalIDSeq 是目标 ID 序列号生成器。
-var goalIDSeq atomic.Int64
-
 // newGoalID 生成唯一目标 ID。
+// 使用随机 UUID 而非进程内序列号：序列号在重启后从 1 重计，
+// 会与存储中的旧目标撞 ID，导致 Save 静默覆盖旧目标。
 func newGoalID() string {
-	return fmt.Sprintf("goal-%06d", goalIDSeq.Add(1))
+	return "goal-" + uuid.NewString()[:8]
 }
 
 // asString 安全地将 any 转为 string。
@@ -103,11 +102,11 @@ func (t *AddGoalTool) Call(ctx context.Context, args map[string]any) (string, er
 	goal.ID = newGoalID()
 	goal.Title = strings.TrimSpace(asString(args["title"]))
 	goal.Description = strings.TrimSpace(asString(args["description"]))
-	
+
 	if goal.Title == "" {
 		return "", fmt.Errorf("title 不能为空")
 	}
-	
+
 	goal.Status = GoalStatusActive
 	goal.CreatedAt = time.Now()
 	goal.Priority = int(asFloat(args["priority"]))
@@ -185,7 +184,9 @@ func NewListGoalsTool(store GoalStore) *ListGoalsTool {
 
 func (t *ListGoalsTool) Name() string { return "list_goals" }
 
-func (t *ListGoalsTool) Description() string { return "列出所有长期目标，显示状态、下次执行时间等信息" }
+func (t *ListGoalsTool) Description() string {
+	return "列出所有长期目标，显示状态、下次执行时间等信息"
+}
 
 func (t *ListGoalsTool) Schema() map[string]any {
 	return map[string]any{
@@ -213,10 +214,11 @@ func (t *ListGoalsTool) Call(ctx context.Context, args map[string]any) (string, 
 		fmt.Fprintf(&sb, "  下次执行: %s\n", formatNextRunAt(g.NextRunAt))
 		fmt.Fprintf(&sb, "  执行次数: %d (失败 %d 次)\n", g.RunCount, g.FailCount)
 		if g.LastResult != "" {
-			// 截断过长的结果
-			result := g.LastResult
-			if len(result) > 100 {
-				result = result[:100] + "..."
+			// 截断过长的结果：按字符截断，避免切断多字节 UTF-8 字符产生乱码
+			runes := []rune(g.LastResult)
+			result := string(runes)
+			if len(runes) > 100 {
+				result = string(runes[:100]) + "..."
 			}
 			fmt.Fprintf(&sb, "  上次结果: %s\n", result)
 		}
@@ -230,9 +232,9 @@ func (t *ListGoalsTool) Call(ctx context.Context, args map[string]any) (string, 
 
 // RemoveGoalTool 允许用户移除长期目标。
 type RemoveGoalTool struct {
-	store     GoalStore
-	registry  *agent.Registry
-	onRemove  func(string) // 移除成功后通知调度器
+	store    GoalStore
+	registry *agent.Registry
+	onRemove func(string) // 移除成功后通知调度器
 }
 
 // NewRemoveGoalTool 创建 remove_goal 工具。
@@ -242,7 +244,9 @@ func NewRemoveGoalTool(store GoalStore, registry *agent.Registry, onRemove func(
 
 func (t *RemoveGoalTool) Name() string { return "remove_goal" }
 
-func (t *RemoveGoalTool) Description() string { return "移除一个长期目标，移除后不再自动执行" }
+func (t *RemoveGoalTool) Description() string {
+	return "移除一个长期目标，移除后不再自动执行"
+}
 
 func (t *RemoveGoalTool) Schema() map[string]any {
 	return map[string]any{

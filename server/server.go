@@ -30,7 +30,10 @@ type Config struct {
 	Addr       string
 	Agent      *agent.Agent
 	Autonomous *autonomous.AutonomousAgent // 可选：配置后启用自治能力
-	Store      sessionstore.Store         // 可选：配置后会话持久化，重启后按 session_id 恢复
+	Store      sessionstore.Store          // 可选：配置后会话持久化，重启后按 session_id 恢复
+	// WebhookSecret 是 /webhook/ 端点的鉴权密钥（X-Webhook-Secret 请求头）。
+	// 非空时所有来源必须携带匹配的密钥；为空时仅允许 loopback 来源。
+	WebhookSecret string
 }
 
 func New(cfg Config) *Server {
@@ -55,9 +58,9 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("GET /health", s.handleHealth)
 
 	if cfg.Autonomous != nil {
-		webhookHandler := autonomous.NewWebhookHandler(func(event autonomous.Event) {
-			cfg.Autonomous.EmitEvent(event)
-		})
+		webhookHandler := autonomous.NewWebhookHandler(func(event autonomous.Event) error {
+			return cfg.Autonomous.EmitEventWait(event, 2*time.Second)
+		}, cfg.WebhookSecret)
 		mux.Handle("/webhook/", webhookHandler)
 	}
 

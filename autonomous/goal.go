@@ -33,7 +33,7 @@ const (
 
 // Schedule 描述目标的调度规则。
 type Schedule struct {
-	Type     ScheduleType // 调度类型
+	Type     ScheduleType  // 调度类型
 	Delay    time.Duration // 一次性延迟（30 分钟后）
 	Interval time.Duration // 周期间隔（每 30 分钟）
 	Cron     string        // cron 表达式（"0 8 * * *"）
@@ -97,6 +97,14 @@ func (g *Goal) SetStatus(s GoalStatus) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.Status = s
+}
+
+// Snapshot 返回目标的值拷贝；调用方可安全读取任意字段而无需再加锁。
+// 拷贝中的 mu 指针与原目标共享，仅用于包内序列化，快照使用方不应触碰。
+func (g *Goal) Snapshot() Goal {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return *g
 }
 
 // GoalStore 是目标存储的接口。

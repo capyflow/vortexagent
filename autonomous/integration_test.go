@@ -369,11 +369,12 @@ func TestAutonomousAgent_WebhookIntegration(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 通过 webhook 发送事件
-	handler := NewWebhookHandler(func(e Event) {
-		autoAgent.EmitEvent(e)
-	})
+	handler := NewWebhookHandler(func(e Event) error {
+		return autoAgent.EmitEventWait(e, 2*time.Second)
+	}, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/deploy", strings.NewReader(`{"env":"prod"}`))
+	req.RemoteAddr = "127.0.0.1:1234" // 未配置密钥时仅允许本机来源
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -407,6 +408,153 @@ func TestAutonomousAgent_WebhookIntegration(t *testing.T) {
 	}
 }
 
+// TestAutonomousAgent_OneShotExecutesOnce 回归：oneshot 目标只执行一次并进入 done，
+// 执行后必须重排（标记终态）且持久化，不得陷入重复执行循环。
+func TestAutonomousAgent_OneShotExecutesOnce(t *testing.T) {
+	provider := &fakeProvider{name: "fake", maxRounds: 0}
+	registry := agent.NewRegistry()
+	registry.Add(&echoTool{})
+
+	ag := agent.New(agent.Options{
+		Provider: provider,
+		Registry: registry,
+		Model:    "fake-model",
+	})
+
+	store, err := NewJSONGoalStore(t.TempDir() + "/goals.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	autoAgent := New(Config{
+		Agent:     ag,
+		Model:     "fake-model",
+		GoalStore: store,
+		MaxSleep:  50 * time.Millisecond,
+	})
+
+	g := NewGoal()
+	g.ID = "once-1"
+	g.Title = "只执行一次的目标"
+	g.Status = GoalStatusActive
+	g.NextRunAt = time.Now().Add(-1 * time.Second) // 已到期
+	g.Schedule = Schedule{Type: ScheduleOneShot}
+	if err := autoAgent.AddGoal(g); err != nil {
+		t.Fatalf("AddGoal 不应报错: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = autoAgent.Run(ctx) }()
+
+	// 等待首次执行完成
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		goals := autoAgent.Goals()
+		if len(goals) == 1 && goals[0].RunCount >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 给潜在的重复执行留出观察窗口
+	time.Sleep(300 * time.Millisecond)
+
+	goals := autoAgent.Goals()
+	if len(goals) != 1 {
+		t.Fatalf("应有 1 个目标, got %d", len(goals))
+	}
+	if goals[0].RunCount != 1 {
+		t.Errorf("oneshot 目标应只执行 1 次, got %d", goals[0].RunCount)
+	}
+	if goals[0].Status != GoalStatusDone {
+		t.Errorf("oneshot 目标执行后状态应为 done, got %s", goals[0].Status)
+	}
+
+	// 终态必须持久化：重启后按存储内容不应再执行
+	persisted, err := store.Get("once-1")
+	if err != nil {
+		t.Fatalf("目标应已落盘: %v", err)
+	}
+	persisted.mu.RLock()
+	status := persisted.Status
+	runCount := persisted.RunCount
+	persisted.mu.RUnlock()
+	if status != GoalStatusDone || runCount != 1 {
+		t.Errorf("落盘状态应为 done/1 次, got %s/%d", status, runCount)
+	}
+}
+
+// TestAutonomousAgent_BatchUpdatesState 回归：批量执行必须与单目标一致地
+// 推进 RunCount/LastRunAt、重排 NextRunAt 并落盘。
+func TestAutonomousAgent_BatchUpdatesState(t *testing.T) {
+	provider := &fakeProvider{name: "fake", maxRounds: 0}
+	registry := agent.NewRegistry()
+	registry.Add(&echoTool{})
+
+	ag := agent.New(agent.Options{
+		Provider: provider,
+		Registry: registry,
+		Model:    "fake-model",
+	})
+
+	store, err := NewJSONGoalStore(t.TempDir() + "/goals.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	autoAgent := New(Config{
+		Agent:     ag,
+		Model:     "fake-model",
+		GoalStore: store,
+		MaxSleep:  time.Hour,
+	})
+
+	// 白盒：不经 Run()，直接初始化 scheduler 与 session 后触发批量路径
+	autoAgent.mu.Lock()
+	autoAgent.scheduler = NewScheduler(time.Hour)
+	autoAgent.session = sessionstore.NewSession("fake-model")
+	autoAgent.mu.Unlock()
+
+	past := time.Now().Add(-1 * time.Second)
+	for i, id := range []string{"batch-1", "batch-2"} {
+		g := NewGoal()
+		g.ID = id
+		g.Title = "批量目标 " + id
+		g.Status = GoalStatusActive
+		g.NextRunAt = past
+		g.Schedule = Schedule{Type: ScheduleInterval, Interval: time.Hour}
+		if err := autoAgent.AddGoal(g); err != nil {
+			t.Fatalf("AddGoal %d 不应报错: %v", i, err)
+		}
+	}
+
+	autoAgent.handleDueGoals(context.Background())
+
+	for _, id := range []string{"batch-1", "batch-2"} {
+		g, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("目标 %s 应已落盘: %v", id, err)
+		}
+		g.mu.RLock()
+		runCount, lastRunAt, nextRunAt, status := g.RunCount, g.LastRunAt, g.NextRunAt, g.Status
+		g.mu.RUnlock()
+
+		if runCount != 1 {
+			t.Errorf("%s: RunCount 应为 1, got %d", id, runCount)
+		}
+		if lastRunAt.IsZero() {
+			t.Errorf("%s: LastRunAt 不应为零值", id)
+		}
+		if status != GoalStatusActive {
+			t.Errorf("%s: interval 目标执行后应为 active, got %s", id, status)
+		}
+		if !nextRunAt.After(time.Now()) {
+			t.Errorf("%s: 执行后 NextRunAt 应被推进到未来, got %v", id, nextRunAt)
+		}
+	}
+}
+
 // 确保接口满足
 var _ llm.Provider = (*fakeProvider)(nil)
 var _ agent.Tool = (*echoTool)(nil)
@@ -418,5 +566,5 @@ func (s *nilStore) Save(ctx context.Context, sess *sessionstore.Session) error {
 func (s *nilStore) Load(ctx context.Context, id string) (*sessionstore.Session, error) {
 	return nil, nil
 }
-func (s *nilStore) Delete(ctx context.Context, id string) error          { return nil }
+func (s *nilStore) Delete(ctx context.Context, id string) error               { return nil }
 func (s *nilStore) List(ctx context.Context) ([]*sessionstore.Session, error) { return nil, nil }

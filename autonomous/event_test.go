@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,11 +95,12 @@ func TestFileWatcher_DetectsChanges(t *testing.T) {
 
 func TestWebhookHandler(t *testing.T) {
 	var emitted []Event
-	emit := func(e Event) {
+	emit := func(e Event) error {
 		emitted = append(emitted, e)
+		return nil
 	}
 
-	handler := NewWebhookHandler(emit)
+	handler := NewWebhookHandler(emit, "")
 
 	// 创建请求
 	body := map[string]string{"repo": "my-repo", "ref": "main"}
@@ -105,6 +108,7 @@ func TestWebhookHandler(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github.push", bytes.NewReader(bodyJSON))
 	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:1234" // 未配置密钥时仅允许本机来源
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -127,7 +131,7 @@ func TestWebhookHandler(t *testing.T) {
 }
 
 func TestWebhookHandler_InvalidMethod(t *testing.T) {
-	handler := NewWebhookHandler(func(e Event) {})
+	handler := NewWebhookHandler(func(e Event) error { return nil }, "")
 	req := httptest.NewRequest(http.MethodGet, "/webhook/test", nil)
 	w := httptest.NewRecorder()
 
@@ -140,11 +144,13 @@ func TestWebhookHandler_InvalidMethod(t *testing.T) {
 
 func TestWebhookHandler_EmptyBody(t *testing.T) {
 	var emitted []Event
-	handler := NewWebhookHandler(func(e Event) {
+	handler := NewWebhookHandler(func(e Event) error {
 		emitted = append(emitted, e)
-	})
+		return nil
+	}, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -159,8 +165,9 @@ func TestWebhookHandler_EmptyBody(t *testing.T) {
 }
 
 func TestWebhookHandler_NoEventType(t *testing.T) {
-	handler := NewWebhookHandler(func(e Event) {})
+	handler := NewWebhookHandler(func(e Event) error { return nil }, "")
 	req := httptest.NewRequest(http.MethodPost, "/webhook/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -182,6 +189,81 @@ func TestFormatWebhookEvent(t *testing.T) {
 	result := formatWebhookEvent(event)
 	if result == "" {
 		t.Error("格式化结果不应为空")
+	}
+}
+
+// TestWebhookHandler_Auth 回归：密钥校验与 loopback 限制。
+func TestWebhookHandler_Auth(t *testing.T) {
+	handler := NewWebhookHandler(func(e Event) error { return nil }, "s3cret")
+
+	// 正确密钥 → 200
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	req.Header.Set("X-Webhook-Secret", "s3cret")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("正确密钥应返回 200, got %d", w.Code)
+	}
+
+	// 错误密钥 → 401
+	req = httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	req.Header.Set("X-Webhook-Secret", "wrong")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("错误密钥应返回 401, got %d", w.Code)
+	}
+
+	// 未配置密钥 → 拒绝非本机来源（httptest 默认 RemoteAddr 为 192.0.2.1）
+	open := NewWebhookHandler(func(e Event) error { return nil }, "")
+	req = httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	w = httptest.NewRecorder()
+	open.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("未配置密钥时非本机来源应被拒绝, got %d", w.Code)
+	}
+
+	// 未配置密钥 → 允许本机来源
+	req = httptest.NewRequest(http.MethodPost, "/webhook/test", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w = httptest.NewRecorder()
+	open.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("未配置密钥时本机来源应放行, got %d", w.Code)
+	}
+}
+
+// TestWebhookHandler_BodyTooLarge 回归：超过大小限制的请求体应返回 413。
+// 注意 body 必须是合法 JSON 前缀（如超长字符串值），否则解码器在首字节
+// 就报 SyntaxError，触不到 MaxBytesReader 的大小限制。
+func TestWebhookHandler_BodyTooLarge(t *testing.T) {
+	handler := NewWebhookHandler(func(e Event) error { return nil }, "")
+
+	big := `{"data":"` + strings.Repeat("a", 2<<20) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test", strings.NewReader(big))
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("超限请求体应返回 413, got %d", w.Code)
+	}
+}
+
+// TestWebhookHandler_EmitErrorReturns503 回归：事件投递失败应如实返回 503，
+// 而不是假装成功（调用方需要知道事件未被消费）。
+func TestWebhookHandler_EmitErrorReturns503(t *testing.T) {
+	handler := NewWebhookHandler(func(e Event) error {
+		return fmt.Errorf("事件投递超时，已丢弃")
+	}, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/deploy", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("投递失败应返回 503, got %d", w.Code)
 	}
 }
 

@@ -34,15 +34,15 @@ type ReflectConfig struct {
 
 // Config 是 AutonomousAgent 的配置。
 type Config struct {
-	Agent         *agent.Agent       // 基础 agent
-	Model         string             // 模型名称（如 "deepseek-chat"，用于创建自治 session）
-	Registry      *agent.Registry    // 工具注册表（用于注册自治工具）
-	GoalStore     GoalStore          // 目标存储
-	MaxSleep      time.Duration      // 最大睡眠间隔（默认 1h）
-	MaxBatchSize  int                // 单次批量执行目标上限（默认 3）
-	EventChan     chan Event         // 外部事件通道（可选，nil 时内部创建）
-	UserInputCh   chan string        // 用户输入通道（可选，nil 时内部创建）
-	ReflectConfig ReflectConfig      // 反思配置（可选，默认轻量模式）
+	Agent         *agent.Agent        // 基础 agent
+	Model         string              // 模型名称（如 "deepseek-chat"，用于创建自治 session）
+	Registry      *agent.Registry     // 工具注册表（用于注册自治工具）
+	GoalStore     GoalStore           // 目标存储
+	MaxSleep      time.Duration       // 最大睡眠间隔（默认 1h）
+	MaxBatchSize  int                 // 单次批量执行目标上限（默认 3）
+	EventChan     chan Event          // 外部事件通道（可选，nil 时内部创建）
+	UserInputCh   chan string         // 用户输入通道（可选，nil 时内部创建）
+	ReflectConfig ReflectConfig       // 反思配置（可选，默认轻量模式）
 	OnGoalExecute func(*Goal, string) // 执行完成回调（可选）
 }
 
@@ -57,10 +57,10 @@ type AutonomousAgent struct {
 	registry    *agent.Registry
 	goalStore   GoalStore
 	scheduler   *Scheduler
-	session     *sessionstore.Session  // 自治专用 session
+	session     *sessionstore.Session // 自治专用 session
 	maxSleep    time.Duration
 	maxBatch    int
-	timer       *time.Timer            // 可重置的睡眠计时器
+	timer       *time.Timer // 可重置的睡眠计时器
 	eventCh     chan Event
 	userInputCh chan string
 	wakeReset   chan struct{}
@@ -130,7 +130,7 @@ func (a *AutonomousAgent) Run(ctx context.Context) error {
 	// 3. 初始化调度器
 	a.mu.Lock()
 	a.scheduler = NewScheduler(a.maxSleep)
-	a.scheduler.goals = goals
+	a.scheduler.ReplaceAll(goals)
 	a.mu.Unlock()
 
 	// 4. 创建专用 session
@@ -209,7 +209,7 @@ func (a *AutonomousAgent) AddGoal(goal *Goal) error {
 
 	// 如果 scheduler 已初始化，立即加入调度
 	if a.scheduler != nil {
-		a.scheduler.goals = append(a.scheduler.goals, goal)
+		a.scheduler.Add(goal)
 
 		// 通知主循环重新计算睡眠
 		select {
@@ -231,13 +231,7 @@ func (a *AutonomousAgent) RemoveGoal(id string) error {
 	}
 
 	// 从 scheduler 中移除
-	var newGoals []*Goal
-	for _, g := range a.scheduler.goals {
-		if g.ID != id {
-			newGoals = append(newGoals, g)
-		}
-	}
-	a.scheduler.goals = newGoals
+	a.scheduler.Remove(id)
 
 	// 从存储中移除
 	if err := a.goalStore.Delete(id); err != nil {
@@ -253,15 +247,20 @@ func (a *AutonomousAgent) RemoveGoal(id string) error {
 	return nil
 }
 
-// Goals 返回所有目标（副本）。
-func (a *AutonomousAgent) Goals() []*Goal {
+// Goals 返回所有目标的快照（值拷贝，调用方无需再加锁即可读取字段）。
+func (a *AutonomousAgent) Goals() []Goal {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
 	if a.scheduler == nil {
 		return nil
 	}
-	return a.scheduler.Goals()
+	goals := a.scheduler.Goals()
+	out := make([]Goal, len(goals))
+	for i, g := range goals {
+		out[i] = g.Snapshot()
+	}
+	return out
 }
 
 // setupGoalTools 注册自治工具到 registry。
@@ -284,14 +283,22 @@ func (a *AutonomousAgent) setupGoalTools() {
 	_ = a.registry.Add(removeTool)
 }
 
-// EmitEvent 发送事件到自治循环（并发安全）。
+// EmitEvent 发送事件到自治循环（并发安全，尽力而为：超时会静默丢弃）。
 func (a *AutonomousAgent) EmitEvent(event Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = a.EmitEventWait(event, 5*time.Second)
+}
+
+// EmitEventWait 发送事件并等待投递结果。
+// 超时（如主循环正忙于长时间的 Ask 调用）时返回错误，调用方可据此感知事件被丢弃。
+func (a *AutonomousAgent) EmitEventWait(event Event, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	select {
 	case a.eventCh <- event:
+		return nil
 	case <-ctx.Done():
 		log.Printf("[vortex-autonomous] 发送事件超时: %s", event.Type)
+		return fmt.Errorf("事件 %q 在 %s 内未被消费，已丢弃", event.Type, timeout)
 	}
 }
 
@@ -306,7 +313,9 @@ func (a *AutonomousAgent) handleDueGoals(ctx context.Context) {
 		if a.preCheck(g) {
 			actionable = append(actionable, g)
 		} else {
+			// 未通过预检：重排（可能标记终态）并持久化
 			a.reschedule(g)
+			a.saveGoal(g)
 		}
 	}
 
@@ -323,6 +332,20 @@ func (a *AutonomousAgent) handleDueGoals(ctx context.Context) {
 		a.executeGoal(ctx, actionable[0])
 	} else {
 		a.executeBatch(ctx, actionable)
+	}
+
+	// 执行后必须重排并持久化：否则 NextRunAt 仍停留在过去，
+	// 下次唤醒会立即重复执行同一目标，形成紧密执行循环
+	for _, g := range actionable {
+		a.reschedule(g)
+		a.saveGoal(g)
+	}
+}
+
+// saveGoal 持久化目标；落盘失败只记录日志，不中断调度。
+func (a *AutonomousAgent) saveGoal(goal *Goal) {
+	if err := a.goalStore.Save(goal); err != nil {
+		log.Printf("[vortex-autonomous] 保存目标 %q(%s) 失败: %v", goal.Title, goal.ID, err)
 	}
 }
 
@@ -388,7 +411,7 @@ func (a *AutonomousAgent) executeGoal(ctx context.Context, goal *Goal) {
 	goal.mu.Unlock()
 
 	// 持久化
-	a.goalStore.Save(goal)
+	a.saveGoal(goal)
 
 	// 回调通知
 	if a.onExecute != nil {
@@ -405,9 +428,12 @@ func (a *AutonomousAgent) executeBatch(ctx context.Context, goals []*Goal) {
 
 	answer, err := a.agent.Ask(ctx, a.session, prompt)
 
-	// 批量更新
+	// 批量更新：与 executeGoal 保持一致的状态推进
+	now := time.Now()
 	for _, g := range goals {
 		g.mu.Lock()
+		g.RunCount++
+		g.LastRunAt = now
 		g.LastResult = answer
 		if err != nil {
 			g.FailCount++
@@ -415,6 +441,10 @@ func (a *AutonomousAgent) executeBatch(ctx context.Context, goals []*Goal) {
 			g.FailCount = 0
 		}
 		g.mu.Unlock()
+
+		if a.onExecute != nil {
+			a.onExecute(g, answer)
+		}
 	}
 }
 
@@ -534,7 +564,7 @@ func (a *AutonomousAgent) reloadGoals() {
 		merged = append(merged, g)
 	}
 
-	a.scheduler.goals = merged
+	a.scheduler.ReplaceAll(merged)
 }
 
 // ─── 上下文与 Prompt ───

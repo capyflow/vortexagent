@@ -105,3 +105,32 @@ func (s *Scheduler) Goals() []*Goal {
 	copy(out, s.goals)
 	return out
 }
+
+// Add 将目标加入调度（并发安全）。
+// 目标的增删必须经由 Scheduler 的方法，避免绕过 s.mu 直接操作 goals 切片。
+func (s *Scheduler) Add(g *Goal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goals = append(s.goals, g)
+}
+
+// Remove 按 ID 移除目标，返回是否存在并被移除。
+func (s *Scheduler) Remove(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, g := range s.goals {
+		if g.ID == id {
+			s.goals = append(s.goals[:i], s.goals[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// ReplaceAll 用新的目标列表整体替换（并发安全）。
+func (s *Scheduler) ReplaceAll(goals []*Goal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goals = goals
+}

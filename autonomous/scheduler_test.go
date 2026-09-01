@@ -32,7 +32,7 @@ func TestSchedulerNextWakeTime_NoGoals(t *testing.T) {
 	// 没有目标时，应为 now + maxSleep
 	expected := time.Now().Add(time.Hour)
 	diff := next.Sub(expected)
- if diff > time.Second || diff < -time.Second {
+	if diff > time.Second || diff < -time.Second {
 		t.Errorf("无目标时下次唤醒应为 now+1h, got %v (diff %v)", next, diff)
 	}
 }

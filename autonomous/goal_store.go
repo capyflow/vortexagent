@@ -95,8 +95,13 @@ func (s *JSONGoalStore) persist() error {
 		return fmt.Errorf("序列化目标失败: %w", err)
 	}
 
-	if err := os.WriteFile(s.file, data, 0o600); err != nil {
-		return fmt.Errorf("写入目标文件失败: %w", err)
+	// 原子写：先写临时文件再重命名，避免写一半崩溃导致数据损坏、服务无法启动
+	tmp := s.file + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("写入临时目标文件失败: %w", err)
+	}
+	if err := os.Rename(tmp, s.file); err != nil {
+		return fmt.Errorf("替换目标文件失败: %w", err)
 	}
 	return nil
 }
