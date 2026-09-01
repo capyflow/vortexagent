@@ -35,6 +35,11 @@ type ToolsConfig struct {
 	// Filesystem 启用 read_file / write_file / edit_file / list_files 工具，
 	// 所有路径被限制在 root 目录内（防 prompt injection 越权读写）。
 	Filesystem *FilesystemToolConfig `json:"filesystem,omitempty"`
+
+	// Memory 启用长期记忆工具组（memory_save / memory_update / memory_delete /
+	// memory_get / memory_search / memory_list）。记忆是 agent 运行中自己写入、
+	// 跨会话持久化的事实条目，与单会话的历史（session）相互独立。
+	Memory *MemoryToolConfig `json:"memory,omitempty"`
 }
 
 // ExecToolConfig exec 工具配置。
@@ -47,6 +52,12 @@ type ExecToolConfig struct {
 type FilesystemToolConfig struct {
 	Enabled bool   `json:"enabled"`
 	Root    string `json:"root,omitempty"` // 允许访问的根目录，默认当前目录
+}
+
+// MemoryToolConfig 长期记忆工具组配置。
+type MemoryToolConfig struct {
+	Enabled bool   `json:"enabled"`
+	Dir     string `json:"dir,omitempty"` // 记忆存储目录，默认 ~/.vortex/memory
 }
 
 // SessionConfig 会话存储配置。

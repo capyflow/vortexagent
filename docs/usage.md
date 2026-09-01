@@ -168,7 +168,8 @@ func (t *WeatherTool) Call(ctx context.Context, args map[string]any) (string, er
 {
   "tools": {
     "exec":       { "enabled": true, "workdir": "." },
-    "filesystem": { "enabled": true, "root": "./project" }
+    "filesystem": { "enabled": true, "root": "./project" },
+    "memory":     { "enabled": true, "dir": "~/.vortex/memory" }
   },
   "knowledge": ["./docs"],
   "mcpServers": [
@@ -179,6 +180,7 @@ func (t *WeatherTool) Call(ctx context.Context, args map[string]any) (string, er
 
 - `exec`：shell 命令执行（超时封顶 10 分钟、输出安全截断）。**建议配合权限钩子做命令白名单**；
 - `filesystem`：read/write/edit/list 四件套，路径被限制在 `root` 内；
+- `memory`：长期记忆六件套（`memory_save` / `memory_update` / `memory_delete` / `memory_get` / `memory_search` / `memory_list`），agent 运行中自己积累的跨会话事实记忆（偏好 / 决策 / 教训），JSON 文件持久化，与单会话历史相互独立；
 - `knowledge`：本地文档检索（`search_knowledge` / `read_document`）；
 - `mcpServers`：任意语言编写的 MCP server，工具自动发现注册，Python/Node 生态的现成 server 直接可用。
 
