@@ -50,6 +50,7 @@ vortex 借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（一
 │ 内置扩展（可选，按需注册，不注册就是纯通用 agent）                │
 │   tools/mcp/          MCP 客户端（任意语言的自定义工具）          │
 │   tools/knowledge/    本地文档知识库工具（文档问答场景才需要）      │
+│   tools/memory/       长期记忆工具（跨会话事实记忆，按需启用）      │
 ├────────────────────────────────────────────────────────────┤
 │ 外部世界：OpenAI / Anthropic / Gemini / 任意 MCP server        │
 └────────────────────────────────────────────────────────────┘
@@ -71,6 +72,7 @@ vortex 借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（一
 应用层 → agent → llm
               → tools/mcp
               → tools/knowledge
+              → tools/memory
 ```
 
 为什么这么设计？**下层不知道上层的存在**，所以可以单独测试、单独替换。
@@ -464,6 +466,32 @@ Connect(配置)
 - **路径安全**：`read_document` 用 `filepath.Rel` + `EvalSymlinks` 双重校验，拒绝 `../` 越界——
   **给 LLM 的工具必须有权限边界**，否则模型可能被 prompt injection 诱导读取任意文件
 
+### 4.3 内置扩展：长期记忆工具（tools/memory/）
+
+与 4.2 的知识库不同，这是 **agent 在运行中自己写入、跨会话存活的记忆**。框架里三类
+已有"记忆"机制的分工：
+
+| 机制 | 生命周期 | 粒度 |
+|------|---------|------|
+| `Session.History` | 单次会话内 | 对话原文 |
+| ContextManager 卸载 | 会话内压缩归档（按 sessionID 隔离） | 历史摘要 |
+| `tools/knowledge` | 人工维护的静态语料，只读 | 文档 |
+| `tools/memory`（本节） | **跨会话，agent 自己增删改查** | 一条记忆一个事实 |
+
+暴露六个工具：`memory_save` / `memory_update` / `memory_delete` / `memory_get` /
+`memory_search` / `memory_list`。每条记忆是自包含的事实（偏好 / 决策 / 教训等，
+带 kind、tags、importance），不存对话原文。
+
+实现要点：
+
+- **两个抽象接口**：`Store`（持久化，内置 JSON 文件实现，可换 Postgres）、
+  `Searcher`（检索，内置零依赖的关键词评分实现——CJK 二元组分词 + 标签加权 +
+  新鲜度/重要级加分）。记忆量大或需要语义泛化时，把 `Searcher` 换成向量检索
+  （RAG）即可，工具层零改动
+- **近似重复提示**：save 时计算词元 Jaccard 相似度，发现高度相似的旧记忆只提示
+  不阻止——保存是显式意图，是否合并/清理由模型决定
+- **工具结果带 ID**：所有输出把 ID 放在最前面，模型引用它做 update / delete
+
 ---
 
 ## 5. 应用层：参考 CLI 与示例
@@ -628,6 +656,7 @@ func main() {
 | 并行分发后台任务 | `TaskHub` + `task_start` / `task_wait`，主 agent 分发后继续自己的工作（见 `examples/async-agent`） | ⭐⭐ |
 | 让 agent 更聪明 | 改进 `Options.SystemPrompt`（提示词工程） | ⭐ |
 | 上下文压缩 | 历史太长时摘要旧消息（compaction，pi 有成熟实现可借鉴） | ⭐⭐⭐ |
+| 跨会话长期记忆 | 注册 `tools/memory` 六件套（`memory_save` / `memory_search` 等），或自定义 `Store` / `Searcher` 接入向量检索 | ⭐ |
 | 文档问答升级 RAG | 换向量检索（chromem-go 等），`tools/knowledge` 包内部替换 | ⭐⭐⭐ |
 
 **进阶学习资源**：本项目借鉴的 [earendil-works/pi](https://github.com/earendil-works/pi)

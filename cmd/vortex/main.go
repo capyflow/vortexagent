@@ -33,6 +33,7 @@ import (
 	"github.com/capyflow/vortexagent/tools/filesystem"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 	"github.com/capyflow/vortexagent/tools/mcp"
+	"github.com/capyflow/vortexagent/tools/memory"
 )
 
 func main() {
@@ -307,6 +308,24 @@ func registerBuiltinTools(registry *agent.Registry, cfg *ToolsConfig) {
 			}
 		}
 		fmt.Printf("已启用内置工具: read_file / write_file / edit_file / list_files（根目录 %s）\n", root)
+	}
+	if cfg.Memory != nil && cfg.Memory.Enabled {
+		dir := expandPath(cfg.Memory.Dir)
+		if dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".vortex", "memory")
+		}
+		memStore, err := memory.NewJSONStore(filepath.Join(dir, "memories.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "警告: 启用长期记忆失败:", err)
+		} else {
+			for _, t := range memory.NewTools(memStore, nil) {
+				if err := registry.Add(t); err != nil {
+					fmt.Fprintln(os.Stderr, "警告:", err)
+				}
+			}
+			fmt.Printf("已启用内置工具: 长期记忆六件套（存储 %s）\n", filepath.Join(dir, "memories.json"))
+		}
 	}
 }
 

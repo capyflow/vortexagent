@@ -28,6 +28,10 @@
     "filesystem": {
       "enabled": false,
       "root": "."
+    },
+    "memory": {
+      "enabled": false,
+      "dir": "~/.vortex/memory"
     }
   },
   "session": {
