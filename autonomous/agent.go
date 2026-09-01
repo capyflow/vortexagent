@@ -3,6 +3,7 @@ package autonomous
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -186,17 +187,13 @@ func (a *AutonomousAgent) AddGoal(goal *Goal) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.scheduler == nil {
-		return fmt.Errorf("scheduler 未初始化，请先调用 Run()")
-	}
-
 	// 确保 goal 有 mutex
 	if goal.mu == nil {
 		goal.mu = &sync.RWMutex{}
 	}
 
 	// 计算首次执行时间
-	if goal.GetNextRunAt().IsZero() {
+	if goal.GetNextRunAt().IsZero() && goal.Schedule.Type != ScheduleEvent {
 		trigger := newTrigger(goal.Schedule)
 		next, err := trigger.NextRun(time.Now())
 		if err != nil {
@@ -205,13 +202,20 @@ func (a *AutonomousAgent) AddGoal(goal *Goal) error {
 		goal.SetNextRunAt(next)
 	}
 
-	a.scheduler.goals = append(a.scheduler.goals, goal)
-	a.goalStore.Save(goal)
+	// 保存到存储（Run() 加载时会读取）
+	if err := a.goalStore.Save(goal); err != nil {
+		return fmt.Errorf("保存目标失败: %w", err)
+	}
 
-	// 通知主循环重新计算睡眠
-	select {
-	case a.wakeReset <- struct{}{}:
-	default:
+	// 如果 scheduler 已初始化，立即加入调度
+	if a.scheduler != nil {
+		a.scheduler.goals = append(a.scheduler.goals, goal)
+
+		// 通知主循环重新计算睡眠
+		select {
+		case a.wakeReset <- struct{}{}:
+		default:
+		}
 	}
 
 	return nil
@@ -282,10 +286,12 @@ func (a *AutonomousAgent) setupGoalTools() {
 
 // EmitEvent 发送事件到自治循环（并发安全）。
 func (a *AutonomousAgent) EmitEvent(event Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	select {
 	case a.eventCh <- event:
-	default:
-		// 通道满时丢弃，避免阻塞外部调用方
+	case <-ctx.Done():
+		log.Printf("[vortex-autonomous] 发送事件超时: %s", event.Type)
 	}
 }
 
@@ -479,9 +485,6 @@ func (a *AutonomousAgent) handleEvent(ctx context.Context, event Event) {
 	}
 
 	for _, g := range matched {
-		if !a.preCheck(g) {
-			continue
-		}
 		a.executeGoal(ctx, g)
 		a.reschedule(g)
 	}
