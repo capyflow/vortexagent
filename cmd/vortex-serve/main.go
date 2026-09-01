@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
+	"github.com/capyflow/vortexagent/autonomous"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/server"
 	"github.com/capyflow/vortexagent/tools/knowledge"
@@ -105,14 +107,49 @@ func main() {
 		MaxRetries:   3,
 	})
 
+	var autoAgent *autonomous.AutonomousAgent
+	if cfg.Autonomous != nil && cfg.Autonomous.Enabled {
+		goalStore, err := autonomous.NewJSONGoalStore(expandPath(cfg.Autonomous.GoalStore.File))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: 初始化目标存储失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		autoAgent = autonomous.New(autonomous.Config{
+			Agent:     ag,
+			Model:     cfg.Provider.Model,
+			Registry:  registry,
+			GoalStore: goalStore,
+			MaxSleep:  time.Duration(cfg.Autonomous.MaxSleepMin) * time.Minute,
+		})
+
+		for _, g := range cfg.Autonomous.Goals {
+			goal := goalFromConfig(g)
+			if goal != nil {
+				autoAgent.AddGoal(goal)
+			}
+		}
+
+		fmt.Printf("自治 agent 已启用（目标存储: %s）\n", cfg.Autonomous.GoalStore.File)
+	}
+
 	srv := server.New(server.Config{
-		Addr:  *addr,
-		Agent: ag,
-		Store: store,
+		Addr:       *addr,
+		Agent:      ag,
+		Autonomous: autoAgent,
+		Store:      store,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if autoAgent != nil {
+		go func() {
+			if err := autoAgent.Run(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "自治 agent 错误: %v\n", err)
+			}
+		}()
+	}
 
 	go func() {
 		fmt.Printf("vortex HTTP server 启动在 %s\n", *addr)
@@ -138,9 +175,10 @@ type Config struct {
 		Temperature *float64 `json:"temperature,omitempty"`
 		Thinking    bool     `json:"thinking,omitempty"`
 	} `json:"provider"`
-	Knowledge    []string      `json:"knowledge,omitempty"`
-	SystemPrompt string        `json:"systemPrompt,omitempty"`
-	Session      SessionConfig `json:"session,omitempty"`
+	Knowledge    []string         `json:"knowledge,omitempty"`
+	SystemPrompt string           `json:"systemPrompt,omitempty"`
+	Session      SessionConfig    `json:"session,omitempty"`
+	Autonomous   *AutonomousConfig `json:"autonomous,omitempty"`
 }
 
 // SessionConfig 会话持久化配置（与 vortex CLI 的同名配置一致）。
@@ -149,6 +187,28 @@ type SessionConfig struct {
 	Type string `json:"type"`
 	// File JSON 存储文件路径（Type=json 时使用）
 	File string `json:"file"`
+}
+
+type AutonomousConfig struct {
+	Enabled     bool              `json:"enabled"`
+	MaxSleepMin int               `json:"max_sleep_minutes"`
+	GoalStore   GoalStoreConfig   `json:"goal_store"`
+	Goals       []GoalConfig      `json:"goals"`
+}
+
+type GoalStoreConfig struct {
+	Type string `json:"type"`
+	File string `json:"file"`
+}
+
+type GoalConfig struct {
+	Title        string  `json:"title"`
+	Description  string  `json:"description"`
+	ScheduleType string  `json:"schedule_type"`
+	Cron         string  `json:"cron,omitempty"`
+	IntervalMin  float64 `json:"interval_minutes,omitempty"`
+	DelayMin     float64 `json:"delay_minutes,omitempty"`
+	Priority     int     `json:"priority"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -207,4 +267,52 @@ func loadDotEnv(path string) error {
 		}
 	}
 	return nil
+}
+
+func goalFromConfig(c GoalConfig) *autonomous.Goal {
+	if c.Title == "" || c.ScheduleType == "" {
+		return nil
+	}
+
+	g := autonomous.NewGoal()
+	g.Title = c.Title
+	g.Description = c.Description
+	g.Status = autonomous.GoalStatusActive
+	g.Priority = c.Priority
+	if g.Priority <= 0 {
+		g.Priority = 5
+	}
+
+	switch c.ScheduleType {
+	case "oneshot":
+		g.Schedule.Type = autonomous.ScheduleOneShot
+		g.Schedule.Delay = time.Duration(c.DelayMin) * time.Minute
+		if g.Schedule.Delay <= 0 {
+			g.Schedule.Delay = time.Hour
+		}
+		g.NextRunAt = time.Now().Add(g.Schedule.Delay)
+	case "interval":
+		g.Schedule.Type = autonomous.ScheduleInterval
+		g.Schedule.Interval = time.Duration(c.IntervalMin) * time.Minute
+		if g.Schedule.Interval <= 0 {
+			g.Schedule.Interval = time.Hour
+		}
+		g.NextRunAt = time.Now().Add(g.Schedule.Interval)
+	case "cron":
+		g.Schedule.Type = autonomous.ScheduleCron
+		g.Schedule.Cron = c.Cron
+		if g.Schedule.Cron == "" {
+			g.Schedule.Cron = "0 8 * * *"
+		}
+		trigger := &autonomous.CronTrigger{Expr: g.Schedule.Cron}
+		next, err := trigger.NextRun(time.Now())
+		if err != nil {
+			return nil
+		}
+		g.NextRunAt = next
+	default:
+		return nil
+	}
+
+	return g
 }

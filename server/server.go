@@ -10,13 +10,15 @@ import (
 
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
+	"github.com/capyflow/vortexagent/autonomous"
 )
 
 type Server struct {
-	agent    *agent.Agent
-	store    sessionstore.Store
-	sessions map[string]*sessionstore.Session
-	mu       sync.RWMutex
+	agent      *agent.Agent
+	autonomous *autonomous.AutonomousAgent // 可选：自治 agent
+	store      sessionstore.Store
+	sessions   map[string]*sessionstore.Session
+	mu         sync.RWMutex
 	// sessionLocks 按会话 ID 串行化请求：同一会话并发 Ask 会交错写入历史、
 	// 污染对话上下文。不同会话互不影响。
 	sessionLocks sync.Map // sessionID → *sync.Mutex
@@ -25,9 +27,10 @@ type Server struct {
 }
 
 type Config struct {
-	Addr  string
-	Agent *agent.Agent
-	Store sessionstore.Store // 可选：配置后会话持久化，重启后按 session_id 恢复
+	Addr       string
+	Agent      *agent.Agent
+	Autonomous *autonomous.AutonomousAgent // 可选：配置后启用自治能力
+	Store      sessionstore.Store         // 可选：配置后会话持久化，重启后按 session_id 恢复
 }
 
 func New(cfg Config) *Server {
@@ -36,10 +39,11 @@ func New(cfg Config) *Server {
 	}
 
 	s := &Server{
-		agent:    cfg.Agent,
-		store:    cfg.Store,
-		sessions: make(map[string]*sessionstore.Session),
-		addr:     cfg.Addr,
+		agent:      cfg.Agent,
+		autonomous: cfg.Autonomous,
+		store:      cfg.Store,
+		sessions:   make(map[string]*sessionstore.Session),
+		addr:       cfg.Addr,
 	}
 
 	mux := http.NewServeMux()
@@ -49,6 +53,13 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /health", s.handleHealth)
+
+	if cfg.Autonomous != nil {
+		webhookHandler := autonomous.NewWebhookHandler(func(event autonomous.Event) {
+			cfg.Autonomous.EmitEvent(event)
+		})
+		mux.Handle("/webhook/", webhookHandler)
+	}
 
 	s.httpServer = &http.Server{
 		Addr:         cfg.Addr,
