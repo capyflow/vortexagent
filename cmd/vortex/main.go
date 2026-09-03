@@ -28,6 +28,7 @@ import (
 
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
+	"github.com/capyflow/vortexagent/config"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/tools/exec"
 	"github.com/capyflow/vortexagent/tools/filesystem"
@@ -37,11 +38,11 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "", "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json）")
+	configPath := flag.String("config", config.DefaultPath, "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json；可构建时烧录，运行时可覆盖）")
 	flag.Parse()
 
 	if *configPath == "" {
-		fmt.Fprintln(os.Stderr, "错误: 必须通过 -config 指定配置文件路径，例如: vortex -config ./vortex/deploy_agent/my-agent.json")
+		fmt.Fprintln(os.Stderr, "错误: 未指定配置文件路径：构建时 -ldflags \"-X github.com/capyflow/vortexagent/config.DefaultPath=路径\" 烧录，或运行时 -config 传入")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -64,14 +65,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 
 	// 0. 加载 .env（若存在）：填充未设置的环境变量，不覆盖已有值
-	if err := loadDotEnv(".env"); err != nil {
+	if err := config.LoadDotEnv(".env"); err != nil {
 		fmt.Fprintln(os.Stderr, "警告: 加载 .env 失败:", err)
 	}
 
@@ -82,10 +83,10 @@ func main() {
 	} else if cfg.Provider.APIKeyEnv != "" {
 		apiKey = os.Getenv(cfg.Provider.APIKeyEnv)
 		if apiKey == "" {
-			apiKey = os.Getenv(defaultAPIKeyEnv(cfg.Provider.Name))
+			apiKey = os.Getenv(config.DefaultAPIKeyEnv(cfg.Provider.Name))
 		}
 	} else {
-		apiKey = os.Getenv(defaultAPIKeyEnv(cfg.Provider.Name))
+		apiKey = os.Getenv(config.DefaultAPIKeyEnv(cfg.Provider.Name))
 	}
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "错误: 未找到 API 密钥，请在配置文件中填写 apiKey 或设置环境变量")
@@ -179,7 +180,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "错误: session.type=json 但未配置 session.file")
 			os.Exit(1)
 		}
-		sessionFile := expandPath(cfg.Session.File)
+		sessionFile := config.ExpandPath(cfg.Session.File)
 		jsonStore, jerr := sessionstore.NewJSON(sessionFile)
 		if jerr != nil {
 			fmt.Fprintln(os.Stderr, "错误:", jerr)
@@ -279,8 +280,8 @@ func main() {
 	}
 }
 
-// registerBuiltinTools 按配置注册内置工具（exec / filesystem）。
-func registerBuiltinTools(registry *agent.Registry, cfg *ToolsConfig) {
+// registerBuiltinTools 按配置注册内置工具（exec / filesystem / memory）。
+func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
 	if cfg.Exec != nil && cfg.Exec.Enabled {
 		workdir := cfg.Exec.Workdir
 		if workdir == "" {
@@ -311,7 +312,7 @@ func registerBuiltinTools(registry *agent.Registry, cfg *ToolsConfig) {
 		fmt.Printf("已启用内置工具: read_file / write_file / edit_file / list_files（根目录 %s）\n", root)
 	}
 	if cfg.Memory != nil && cfg.Memory.Enabled {
-		dir := expandPath(cfg.Memory.Dir)
+		dir := config.ExpandPath(cfg.Memory.Dir)
 		if dir == "" {
 			home, _ := os.UserHomeDir()
 			dir = filepath.Join(home, ".vortex", "memory")
@@ -459,7 +460,7 @@ func handleDeleteSession(current *sessionstore.Session, store sessionstore.Store
 }
 
 // modelName 返回展示用的模型名。
-func modelName(cfg *Config) string {
+func modelName(cfg *config.Config) string {
 	if cfg.Provider.Model != "" {
 		return cfg.Provider.Model
 	}
@@ -474,14 +475,6 @@ func generateDeviceID() string {
 	return fmt.Sprintf("%s-%s", hostname, hex.EncodeToString(b[:]))
 }
 
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[1:])
-	}
-	return path
-}
-
 // mustScan 读入下一行输入；输入流结束（EOF 或读取出错）时中止进程，
 // 避免配置向导在非交互环境下读不到输入而无限空转。
 func mustScan(scanner *bufio.Scanner) string {
@@ -492,7 +485,7 @@ func mustScan(scanner *bufio.Scanner) string {
 	return strings.TrimSpace(scanner.Text())
 }
 
-func interactiveSetup() *Config {
+func interactiveSetup() *config.Config {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("=== Vortex Agent 配置向导 ===")
@@ -525,11 +518,11 @@ func interactiveSetup() *Config {
 
 	for {
 		fmt.Print("\nAPI 密钥环境变量名 (默认 ")
-		fmt.Print(defaultAPIKeyEnv(providerName))
+		fmt.Print(config.DefaultAPIKeyEnv(providerName))
 		fmt.Print("): ")
 		apiKeyEnv = mustScan(scanner)
 		if apiKeyEnv == "" {
-			apiKeyEnv = defaultAPIKeyEnv(providerName)
+			apiKeyEnv = config.DefaultAPIKeyEnv(providerName)
 		}
 
 		fmt.Print("\n模型名称: ")
@@ -553,7 +546,7 @@ func interactiveSetup() *Config {
 	home, _ := os.UserHomeDir()
 	defaultSessionFile := filepath.Join(home, ".vortex", "sessions.json")
 
-	cfg := &Config{}
+	cfg := &config.Config{}
 	cfg.Provider.Name = providerName
 	cfg.Provider.APIKeyEnv = apiKeyEnv
 	cfg.Provider.Model = model
@@ -564,7 +557,7 @@ func interactiveSetup() *Config {
 	return cfg
 }
 
-func saveConfig(path string, cfg *Config) error {
+func saveConfig(path string, cfg *config.Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

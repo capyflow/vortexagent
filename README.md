@@ -87,6 +87,7 @@ agent/             Agent 运行时
   hooks.go         生命周期钩子（日志/遥测/权限拦截）
   store.go         会话存储抽象（内存 / JSON 文件实现）
 autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性），配合 vortex-serve 运行
+config/            配置文件 schema 与加载（参考 CLI 与下游项目共用，支持构建时烧录默认路径）
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
 tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
@@ -122,13 +123,22 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 
 ## 配置文件（仅参考 CLI 使用）
 
-路径由 `-config` 参数指定，**必填**（无默认值），推荐把各 agent 的配置集中放在
-`vortex/deploy_agent/<agent名>.json`：
+配置文件路径**必填**，构建时烧录或运行时传入均可（运行时优先），推荐把各 agent 的配置
+集中放在 `vortex/deploy_agent/<agent名>.json`：
 
 ```bash
+# 方式一：运行时 -config 传入
 go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json
 go run ./cmd/vortex-serve -config vortex/deploy_agent/my-agent.json -addr :8080
+
+# 方式二：构建时把路径烧录进二进制，运行后无需再传 -config
+go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=vortex/deploy_agent/my-agent.json" -o my-agent ./cmd/vortex
+./my-agent
 ```
+
+两种方式都没指定时启动报错。烧录目标是框架 `config` 包的 `DefaultPath` 变量——**下游项目
+引入本框架后，用自己的构建命令烧录同一个变量即可**，运行时读到的就是烧录值；在代码里
+`config.DefaultPath` 也可以直接当默认值读（如作为 `-config` flag 的默认值）。
 
 | 字段 | 说明 |
 |------|------|
@@ -178,6 +188,11 @@ go run ./cmd/vortex-serve -config vortex/deploy_agent/my-agent.json -addr :8080
    主 agent 继续自己的工作、稍后收结果）注册进总机 agent 的 Registry——智能客服、
    编码 agent 的"总-分"结构由此衍生（见 `examples/customer-service-agent` 与
    `examples/async-agent`）。
+8. **复用配置文件加载（可选）**：`config` 包提供与参考 CLI 同源的配置 schema，
+   `config.LoadConfig(path)` 直接解析为 `config.Config`（provider / session / tools /
+   autonomous 等），配套 `config.ExpandPath`、`config.LoadDotEnv`、`config.GoalFromConfig`。
+   默认路径可在构建时烧录：`go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=..."`，
+   运行时用 `-config` 覆盖。
 
 ## 开发
 

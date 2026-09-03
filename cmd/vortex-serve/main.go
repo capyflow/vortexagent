@@ -1,13 +1,13 @@
+// Command vortex-serve 是基于本框架的参考服务端：把 agent 挂到 HTTP 上（SSE 流式接口），
+// 可选启用自治 agent（目标调度 + webhook 触发）。配置加载与 vortex CLI 共用 config 包。
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -15,18 +15,19 @@ import (
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/autonomous"
+	"github.com/capyflow/vortexagent/config"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/server"
 	"github.com/capyflow/vortexagent/tools/knowledge"
 )
 
 func main() {
-	configPath := flag.String("config", "", "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json）")
+	configPath := flag.String("config", config.DefaultPath, "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json；可构建时烧录，运行时可覆盖）")
 	addr := flag.String("addr", ":8080", "监听地址")
 	flag.Parse()
 
 	if *configPath == "" {
-		fmt.Fprintln(os.Stderr, "错误: 必须通过 -config 指定配置文件路径，例如: vortex-serve -config ./vortex/deploy_agent/my-agent.json -addr :8080")
+		fmt.Fprintln(os.Stderr, "错误: 未指定配置文件路径：构建时 -ldflags \"-X github.com/capyflow/vortexagent/config.DefaultPath=路径\" 烧录，或运行时 -config 传入")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -37,13 +38,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 
-	if err := loadDotEnv(".env"); err != nil {
+	if err := config.LoadDotEnv(".env"); err != nil {
 		fmt.Fprintf(os.Stderr, "警告: 加载 .env 失败: %v\n", err)
 	}
 
@@ -53,7 +54,7 @@ func main() {
 	} else if cfg.Provider.APIKeyEnv != "" {
 		apiKey = os.Getenv(cfg.Provider.APIKeyEnv)
 	} else {
-		apiKey = os.Getenv(defaultAPIKeyEnv(cfg.Provider.Name))
+		apiKey = os.Getenv(config.DefaultAPIKeyEnv(cfg.Provider.Name))
 	}
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "错误: 未找到 API 密钥")
@@ -89,7 +90,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "错误: session.type=json 但未配置 session.file")
 			os.Exit(1)
 		}
-		jsonStore, jerr := sessionstore.NewJSON(expandPath(cfg.Session.File))
+		jsonStore, jerr := sessionstore.NewJSON(config.ExpandPath(cfg.Session.File))
 		if jerr != nil {
 			fmt.Fprintln(os.Stderr, "错误:", jerr)
 			os.Exit(1)
@@ -111,7 +112,7 @@ func main() {
 	var autoAgent *autonomous.AutonomousAgent
 	var webhookSecret string
 	if cfg.Autonomous != nil && cfg.Autonomous.Enabled {
-		goalStore, err := autonomous.NewJSONGoalStore(expandPath(cfg.Autonomous.GoalStore.File))
+		goalStore, err := autonomous.NewJSONGoalStore(config.ExpandPath(cfg.Autonomous.GoalStore.File))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "错误: 初始化目标存储失败: %v\n", err)
 			os.Exit(1)
@@ -126,7 +127,7 @@ func main() {
 		})
 
 		for _, g := range cfg.Autonomous.Goals {
-			goal, err := goalFromConfig(g)
+			goal, err := config.GoalFromConfig(g)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "警告: 跳过无效的自治目标配置 %q: %v\n", g.Title, err)
 				continue
@@ -177,161 +178,4 @@ func main() {
 	fmt.Println("\n正在关闭服务器...")
 	srv.Shutdown(context.Background())
 	fmt.Println("服务器已关闭")
-}
-
-type Config struct {
-	Provider struct {
-		Name        string   `json:"name"`
-		APIKey      string   `json:"apiKey,omitempty"`
-		APIKeyEnv   string   `json:"apiKeyEnv,omitempty"`
-		BaseURL     string   `json:"baseURL,omitempty"`
-		Model       string   `json:"model,omitempty"`
-		MaxTokens   int      `json:"maxTokens,omitempty"`
-		Temperature *float64 `json:"temperature,omitempty"`
-		Thinking    bool     `json:"thinking,omitempty"`
-	} `json:"provider"`
-	Knowledge    []string          `json:"knowledge,omitempty"`
-	SystemPrompt string            `json:"systemPrompt,omitempty"`
-	Session      SessionConfig     `json:"session,omitempty"`
-	Autonomous   *AutonomousConfig `json:"autonomous,omitempty"`
-}
-
-// SessionConfig 会话持久化配置（与 vortex CLI 的同名配置一致）。
-type SessionConfig struct {
-	// Type 存储类型：memory（默认，不持久化）/ json
-	Type string `json:"type"`
-	// File JSON 存储文件路径（Type=json 时使用）
-	File string `json:"file"`
-}
-
-type AutonomousConfig struct {
-	Enabled       bool            `json:"enabled"`
-	MaxSleepMin   int             `json:"max_sleep_minutes"`
-	GoalStore     GoalStoreConfig `json:"goal_store"`
-	Goals         []GoalConfig    `json:"goals"`
-	WebhookSecret string          `json:"webhook_secret,omitempty"`
-}
-
-type GoalStoreConfig struct {
-	Type string `json:"type"`
-	File string `json:"file"`
-}
-
-type GoalConfig struct {
-	Title        string  `json:"title"`
-	Description  string  `json:"description"`
-	ScheduleType string  `json:"schedule_type"`
-	Cron         string  `json:"cron,omitempty"`
-	IntervalMin  float64 `json:"interval_minutes,omitempty"`
-	DelayMin     float64 `json:"delay_minutes,omitempty"`
-	Priority     int     `json:"priority"`
-}
-
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-func defaultAPIKeyEnv(name string) string {
-	switch name {
-	case "openai":
-		return "OPENAI_API_KEY"
-	case "anthropic":
-		return "ANTHROPIC_API_KEY"
-	case "gemini":
-		return "GEMINI_API_KEY"
-	default:
-		return "OPENAI_API_KEY"
-	}
-}
-
-// expandPath 展开 ~ 前缀的路径。
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[1:])
-	}
-	return path
-}
-
-func loadDotEnv(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if os.Getenv(key) == "" {
-			os.Setenv(key, value)
-		}
-	}
-	return nil
-}
-
-func goalFromConfig(c GoalConfig) (*autonomous.Goal, error) {
-	if c.Title == "" {
-		return nil, fmt.Errorf("缺少 title")
-	}
-	if c.ScheduleType == "" {
-		return nil, fmt.Errorf("缺少 schedule_type")
-	}
-
-	g := autonomous.NewGoal()
-	g.Title = c.Title
-	g.Description = c.Description
-	g.Status = autonomous.GoalStatusActive
-	g.Priority = c.Priority
-	if g.Priority <= 0 {
-		g.Priority = 5
-	}
-
-	switch c.ScheduleType {
-	case "oneshot":
-		g.Schedule.Type = autonomous.ScheduleOneShot
-		g.Schedule.Delay = time.Duration(c.DelayMin) * time.Minute
-		if g.Schedule.Delay <= 0 {
-			g.Schedule.Delay = time.Hour
-		}
-		g.NextRunAt = time.Now().Add(g.Schedule.Delay)
-	case "interval":
-		g.Schedule.Type = autonomous.ScheduleInterval
-		g.Schedule.Interval = time.Duration(c.IntervalMin) * time.Minute
-		if g.Schedule.Interval <= 0 {
-			g.Schedule.Interval = time.Hour
-		}
-		g.NextRunAt = time.Now().Add(g.Schedule.Interval)
-	case "cron":
-		g.Schedule.Type = autonomous.ScheduleCron
-		g.Schedule.Cron = c.Cron
-		if g.Schedule.Cron == "" {
-			g.Schedule.Cron = "0 8 * * *"
-		}
-		trigger := &autonomous.CronTrigger{Expr: g.Schedule.Cron}
-		next, err := trigger.NextRun(time.Now())
-		if err != nil {
-			return nil, fmt.Errorf("无效的 cron 表达式 %q: %w", g.Schedule.Cron, err)
-		}
-		g.NextRunAt = next
-	default:
-		return nil, fmt.Errorf("未知的 schedule_type %q", c.ScheduleType)
-	}
-
-	return g, nil
 }

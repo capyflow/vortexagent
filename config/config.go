@@ -1,30 +1,49 @@
-package main
+// Package config 提供参考 CLI（cmd/vortex、cmd/vortex-serve）与下游项目共用的
+// 配置文件 schema 与加载逻辑。
+//
+// 配置文件路径必填，两种指定方式（运行时优先）：
+//   - 构建时烧录：go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=路径"
+//   - 运行时传入：-config 路径
+//
+// 一个机器跑多个 agent 时，每个 agent 各指向独立文件，如 ./vortex/deploy_agent/my-agent.json。
+package config
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
-// Config 是 vortex 的顶层配置，从 -config 指定的 JSON 文件加载（必填，无默认值）。
-// 一个机器跑多个 agent 时，每个 agent 各指向独立文件，如 ./vortex/deploy_agent/my-agent.json。
-type Config struct {
-	Provider struct {
-		Name        string   `json:"name"`
-		APIKey      string   `json:"apiKey,omitempty"`
-		APIKeyEnv   string   `json:"apiKeyEnv,omitempty"`
-		BaseURL     string   `json:"baseURL"`
-		Model       string   `json:"model"`
-		MaxTokens   int      `json:"maxTokens,omitempty"`
-		Temperature *float64 `json:"temperature,omitempty"`
-		Thinking    bool     `json:"thinking,omitempty"`
-	} `json:"provider"`
+// DefaultPath 构建时可通过 -ldflags 烧录的默认配置文件路径：
+//
+//	go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=./vortex/deploy_agent/my-agent.json"
+//
+// 空值表示未烧录，由调用方要求运行时通过 -config 显式传入。运行时传入优先于烧录值。
+var DefaultPath string
 
+// Config 是 vortex 的顶层配置。
+type Config struct {
+	Provider     ProviderConfig    `json:"provider"`
 	Knowledge    []string          `json:"knowledge,omitempty"`
 	MCPServers   []MCPServerConfig `json:"mcpServers,omitempty"`
 	SystemPrompt string            `json:"systemPrompt,omitempty"`
 	Session      SessionConfig     `json:"session"`
 	Tools        *ToolsConfig      `json:"tools,omitempty"`
+	Autonomous   *AutonomousConfig `json:"autonomous,omitempty"`
+}
+
+// ProviderConfig LLM 提供方配置。
+type ProviderConfig struct {
+	Name        string   `json:"name"`
+	APIKey      string   `json:"apiKey,omitempty"`
+	APIKeyEnv   string   `json:"apiKeyEnv,omitempty"`
+	BaseURL     string   `json:"baseURL"`
+	Model       string   `json:"model"`
+	MaxTokens   int      `json:"maxTokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	Thinking    bool     `json:"thinking,omitempty"`
 }
 
 // ToolsConfig 内置工具开关（默认全关：内置工具涉及本机执行，按需启用）。
@@ -111,8 +130,8 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// defaultAPIKeyEnv 返回各 provider 默认的 API 密钥环境变量名。
-func defaultAPIKeyEnv(name string) string {
+// DefaultAPIKeyEnv 返回各 provider 默认的 API 密钥环境变量名。
+func DefaultAPIKeyEnv(name string) string {
 	switch name {
 	case "anthropic":
 		return "ANTHROPIC_API_KEY"
@@ -121,4 +140,13 @@ func defaultAPIKeyEnv(name string) string {
 	default:
 		return "OPENAI_API_KEY"
 	}
+}
+
+// ExpandPath 展开 ~ 前缀的路径。
+func ExpandPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
+	}
+	return path
 }

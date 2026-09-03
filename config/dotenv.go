@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"bufio"
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// loadDotEnv 读取 .env 文件并把其中的 KEY=VALUE 写入进程环境。
+// LoadDotEnv 读取 .env 文件并把其中的 KEY=VALUE 写入进程环境。
 //
 // 行为约定（与主流 dotenv 实现一致）：
 //   - 文件不存在时静默返回 nil（.env 是可选的便捷配置）
@@ -16,7 +16,7 @@ import (
 //   - 不支持引号转义等复杂语法，KEY 与 VALUE 之间按第一个 '=' 切分
 //
 // 纯标准库实现，避免为这个几十行的功能引入第三方依赖。
-func loadDotEnv(path string) error {
+func LoadDotEnv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
