@@ -21,13 +21,14 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "", "配置文件路径")
+	configPath := flag.String("config", "", "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json）")
 	addr := flag.String("addr", ":8080", "监听地址")
 	flag.Parse()
 
 	if *configPath == "" {
-		home, _ := os.UserHomeDir()
-		*configPath = filepath.Join(home, ".vortex", "agent.json")
+		fmt.Fprintln(os.Stderr, "错误: 必须通过 -config 指定配置文件路径，例如: vortex-serve -config ./vortex/deploy_agent/my-agent.json -addr :8080")
+		flag.Usage()
+		os.Exit(1)
 	}
 
 	if _, err := os.Stat(*configPath); os.IsNotExist(err) {

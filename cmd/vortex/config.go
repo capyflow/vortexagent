@@ -6,7 +6,8 @@ import (
 	"os"
 )
 
-// Config 是 vortex 的顶层配置，从 JSON 文件加载（默认 ~/.vortex/agent.json，可用 -config 覆盖）。
+// Config 是 vortex 的顶层配置，从 -config 指定的 JSON 文件加载（必填，无默认值）。
+// 一个机器跑多个 agent 时，每个 agent 各指向独立文件，如 ./vortex/deploy_agent/my-agent.json。
 type Config struct {
 	Provider struct {
 		Name        string   `json:"name"`

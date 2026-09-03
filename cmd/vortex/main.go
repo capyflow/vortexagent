@@ -37,12 +37,13 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "", "配置文件路径（默认 ~/.vortex/agent.json）")
+	configPath := flag.String("config", "", "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json）")
 	flag.Parse()
 
 	if *configPath == "" {
-		home, _ := os.UserHomeDir()
-		*configPath = filepath.Join(home, ".vortex", "agent.json")
+		fmt.Fprintln(os.Stderr, "错误: 必须通过 -config 指定配置文件路径，例如: vortex -config ./vortex/deploy_agent/my-agent.json")
+		flag.Usage()
+		os.Exit(1)
 	}
 
 	configDir := filepath.Dir(*configPath)
@@ -481,6 +482,16 @@ func expandPath(path string) string {
 	return path
 }
 
+// mustScan 读入下一行输入；输入流结束（EOF 或读取出错）时中止进程，
+// 避免配置向导在非交互环境下读不到输入而无限空转。
+func mustScan(scanner *bufio.Scanner) string {
+	if !scanner.Scan() {
+		fmt.Fprintln(os.Stderr, "错误: 输入已结束，配置向导中止")
+		os.Exit(1)
+	}
+	return strings.TrimSpace(scanner.Text())
+}
+
 func interactiveSetup() *Config {
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -516,23 +527,20 @@ func interactiveSetup() *Config {
 		fmt.Print("\nAPI 密钥环境变量名 (默认 ")
 		fmt.Print(defaultAPIKeyEnv(providerName))
 		fmt.Print("): ")
-		scanner.Scan()
-		apiKeyEnv = strings.TrimSpace(scanner.Text())
+		apiKeyEnv = mustScan(scanner)
 		if apiKeyEnv == "" {
 			apiKeyEnv = defaultAPIKeyEnv(providerName)
 		}
 
 		fmt.Print("\n模型名称: ")
-		scanner.Scan()
-		model = strings.TrimSpace(scanner.Text())
+		model = mustScan(scanner)
 
 		if providerName == "openai" {
 			fmt.Print("\nAPI 地址 (如 https://api.deepseek.com): ")
 		} else {
 			fmt.Print("\nAPI 地址: ")
 		}
-		scanner.Scan()
-		baseURL = strings.TrimSpace(scanner.Text())
+		baseURL = mustScan(scanner)
 
 		if model == "" || baseURL == "" {
 			fmt.Println("\n错误: 模型名称和 API 地址不能为空，请重新填写")
