@@ -5,3 +5,7 @@
 .env
 .omo/
 vortex.json
+
+# 编译产物，走 CI/release 构建，不进仓库
+vortex
+/vortex-serve

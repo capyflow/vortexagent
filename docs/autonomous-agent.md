@@ -158,7 +158,7 @@ vortex-serve 启动流程**，当前生产路径只有 Webhook 事件（代码�
 
 ### 3.1 配置文件启用（vortex-serve）
 
-在 `vortex-serve` 的配置文件（默认 `~/.vortex/agent.json`）中加入 `autonomous` 段：
+在 `vortex-serve` 的配置文件（由 `-config` 指定，必填）中加入 `autonomous` 段：
 
 ```json
 {

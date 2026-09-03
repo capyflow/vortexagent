@@ -46,11 +46,12 @@ export OPENAI_API_KEY=sk-...        # OpenAI 兼容（DeepSeek/Qwen/智谱等）
 # export ANTHROPIC_API_KEY=sk-ant-...
 # export GEMINI_API_KEY=...
 
-# 2. 复制配置模板并修改
-cp vortex.json.example vortex.json
+# 2. 复制配置模板并修改（-config 必填，推荐把各 agent 的配置集中放在 deploy_agent/ 目录）
+mkdir -p vortex/deploy_agent
+cp vortex.json.example vortex/deploy_agent/my-agent.json
 
 # 3. 运行（知识库、MCP 工具、会话持久化均为可选配置）
-go run ./cmd/vortex
+go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json
 ```
 
 交互界面：直接输入问题回车，`/tools` 查看可用工具，`/clear` 清空历史，`/exit`（或 `/quit`）退出。
@@ -70,6 +71,7 @@ go run ./examples/mcp-server                        # MCP server 模板（自定
 
 ```
 cmd/vortex/        参考应用：通用 REPL CLI（配置驱动，组装框架全部能力）
+cmd/vortex-serve/  参考应用：HTTP 服务模式（SSE 流式接口 + webhook，可挂载自治 agent）
 examples/          框架用法示例（minimal / knowledge / customer-service / async / mcp-server）
 ├──────────────────────── 框架核心（你的应用依赖的就是这些包）────────────────────────
 llm/               统一 LLM API
@@ -84,6 +86,7 @@ agent/             Agent 运行时
   session.go       会话消息历史
   hooks.go         生命周期钩子（日志/遥测/权限拦截）
   store.go         会话存储抽象（内存 / JSON 文件实现）
+autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性），配合 vortex-serve 运行
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
 tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
@@ -117,7 +120,15 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 | `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
 | `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
 
-## 配置文件（vortex.json，仅参考 CLI 使用）
+## 配置文件（仅参考 CLI 使用）
+
+路径由 `-config` 参数指定，**必填**（无默认值），推荐把各 agent 的配置集中放在
+`vortex/deploy_agent/<agent名>.json`：
+
+```bash
+go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json
+go run ./cmd/vortex-serve -config vortex/deploy_agent/my-agent.json -addr :8080
+```
 
 | 字段 | 说明 |
 |------|------|
@@ -127,10 +138,26 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 | `provider.model` | 模型名称 |
 | `provider.thinking` | 是否启用思考模式（如 DeepSeek R1 / Claude） |
 | `knowledge` | 知识库根目录列表（可选，注册 search/read 工具） |
-| `tools` | 内置工具开关（可选）：`tools.exec` 启用 shell 执行、`tools.filesystem` 启用文件读写（路径限制在 root 内），默认全关 |
+| `tools` | 内置工具开关（可选）：`tools.exec` 启用 shell 执行、`tools.filesystem` 启用文件读写（路径限制在 root 内）、`tools.memory` 启用长期记忆，默认全关 |
 | `mcpServers` | MCP server 列表，启动时自动连接并注册全部工具（可选） |
 | `systemPrompt` | 自定义系统提示词 |
-| `sessionFile` | 会话持久化文件（可选），非空时重启后自动继续上次对话 |
+| `session` | 会话持久化（可选）：`session.type` 为 `memory`（默认）/ `json` / `postgres`，`session.file` 为 JSON 存储路径，启用后重启可继续上次对话 |
+
+### 一机多 Agent 部署
+
+一台机器跑多个 agent 时，每个 agent 一份独立的 `-config` 配置文件，且**配置内的本地状态路径
+必须互相独立**——JSON 会话存储是进程内快照整文件覆盖写，多个进程指向同一个文件会互相丢数据：
+
+```json
+{
+  "session": { "type": "json", "file": "vortex/deploy_agent/my-agent.sessions.json" },
+  "tools":   { "memory": { "enabled": true, "dir": "vortex/deploy_agent/my-agent.memory" } }
+}
+```
+
+- `vortex-serve` 多实例时，每个进程用不同的 `-addr` 端口
+- 自治 agent 的 `autonomous.goal_store.file` 同理，各 agent 指向独立文件
+- `.env` 按进程工作目录加载，不同 agent 建议各用独立的工作目录
 
 ## 用框架构建你自己的 agent
 
@@ -157,7 +184,7 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 ```bash
 go build ./...            # 编译
 go test ./...             # 全部测试（含端到端集成测试，不依赖真实 API）
-go run ./cmd/vortex       # 本地运行参考 CLI
+go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json   # 本地运行参考 CLI
 ```
 
 ### 测试策略
