@@ -38,35 +38,42 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", config.DefaultPath, "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json；可构建时烧录，运行时可覆盖）")
+	group := flag.String("group", config.DefaultGroup, "agent group 名（数据隔离在 ~/.vortex/<group>/ 下，可构建时烧录）")
+	configPath := flag.String("config", "", "配置文件路径（默认 ~/.vortex/<group>/agent.json）")
 	flag.Parse()
 
-	if *configPath == "" {
-		fmt.Fprintln(os.Stderr, "错误: 未指定配置文件路径：构建时 -ldflags \"-X github.com/capyflow/vortexagent/config.DefaultPath=路径\" 烧录，或运行时 -config 传入")
+	path, effectiveGroup, err := config.ResolveConfigPath(*configPath, *group)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误:", err)
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	configDir := filepath.Dir(*configPath)
+	configDir := filepath.Dir(path)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "错误: 创建配置目录失败:", err)
 		os.Exit(1)
 	}
 
-	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
-		cfg := interactiveSetup()
-		if err := saveConfig(*configPath, cfg); err != nil {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		cfg := interactiveSetup(effectiveGroup)
+		if err := saveConfig(path, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, "错误: 保存配置失败:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("配置已保存到 %s\n", *configPath)
+		fmt.Printf("配置已保存到 %s\n", path)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	cfg, err := config.LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(path)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误:", err)
+		os.Exit(1)
+	}
+	// group 模式下，把留空的会话/记忆等路径解析进 ~/.vortex/<group>/
+	if err := cfg.ResolveGroupDefaults(effectiveGroup); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
@@ -485,7 +492,9 @@ func mustScan(scanner *bufio.Scanner) string {
 	return strings.TrimSpace(scanner.Text())
 }
 
-func interactiveSetup() *config.Config {
+// interactiveSetup 首次运行时的交互式配置向导。group 非空时会话文件留空，
+// 运行时由 ResolveGroupDefaults 解析进 ~/.vortex/<group>/ 实现隔离。
+func interactiveSetup(group string) *config.Config {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("=== Vortex Agent 配置向导 ===")
@@ -553,6 +562,9 @@ func interactiveSetup() *config.Config {
 	cfg.Provider.BaseURL = baseURL
 	cfg.Session.Type = "json"
 	cfg.Session.File = defaultSessionFile
+	if group != "" {
+		cfg.Session.File = "" // 留空：由 group 目录解析，见 ResolveGroupDefaults
+	}
 
 	return cfg
 }

@@ -46,12 +46,9 @@ export OPENAI_API_KEY=sk-...        # OpenAI 兼容（DeepSeek/Qwen/智谱等）
 # export ANTHROPIC_API_KEY=sk-ant-...
 # export GEMINI_API_KEY=...
 
-# 2. 复制配置模板并修改（-config 必填，推荐把各 agent 的配置集中放在 deploy_agent/ 目录）
-mkdir -p vortex/deploy_agent
-cp vortex.json.example vortex/deploy_agent/my-agent.json
-
-# 3. 运行（知识库、MCP 工具、会话持久化均为可选配置）
-go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json
+# 2. 运行（首次启动进入配置向导；-group 决定数据目录 ~/.vortex/my-agent/）
+go run ./cmd/vortex -group my-agent
+#    不想用 group 的话，也可以显式指定配置：go run ./cmd/vortex -config 路径/agent.json
 ```
 
 交互界面：直接输入问题回车，`/tools` 查看可用工具，`/clear` 清空历史，`/exit`（或 `/quit`）退出。
@@ -87,7 +84,7 @@ agent/             Agent 运行时
   hooks.go         生命周期钩子（日志/遥测/权限拦截）
   store.go         会话存储抽象（内存 / JSON 文件实现）
 autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性），配合 vortex-serve 运行
-config/            配置文件 schema 与加载（参考 CLI 与下游项目共用，支持构建时烧录默认路径）
+config/            配置文件 schema 与加载（agent group 数据隔离：~/.vortex/<group>/）
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
 tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
@@ -123,22 +120,33 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 
 ## 配置文件（仅参考 CLI 使用）
 
-配置文件路径**必填**，构建时烧录或运行时传入均可（运行时优先），推荐把各 agent 的配置
-集中放在 `vortex/deploy_agent/<agent名>.json`：
+推荐用 **agent group** 管理配置与数据隔离：group 决定一组独立的本地数据目录
+`~/.vortex/<group>/`，配置、会话、长期记忆、自治目标、上下文卸载文件都默认落在其下：
+
+```
+~/.vortex/<group>/agent.json      配置文件
+~/.vortex/<group>/sessions.json   会话存储（session.type=json 且 file 留空时）
+~/.vortex/<group>/memory/         长期记忆（tools.memory.dir 留空时）
+~/.vortex/<group>/goals.json      自治目标（autonomous.goal_store.file 留空时）
+~/.vortex/<group>/offload/        上下文卸载归档（下游项目接 FileSystemOffload 时）
+```
+
+配置来源优先级：`-config` 显式路径 > group（运行时 `-group` 或构建时烧录）> 烧录 `DefaultPath`：
 
 ```bash
-# 方式一：运行时 -config 传入
-go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json
-go run ./cmd/vortex-serve -config vortex/deploy_agent/my-agent.json -addr :8080
+# 运行时指定 group
+go run ./cmd/vortex -group my-agent
+go run ./cmd/vortex-serve -group my-agent -addr :8080
 
-# 方式二：构建时把路径烧录进二进制，运行后无需再传 -config
-go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=vortex/deploy_agent/my-agent.json" -o my-agent ./cmd/vortex
+# 构建时烧录 group 名，运行后无需任何参数
+# 烧录目标是框架 config 包的 DefaultGroup——下游项目引入框架后，用自己的构建命令
+# 烧录同一个变量即可；代码里也可直接读 config.DefaultGroup 作默认值
+go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultGroup=my-agent" -o my-agent ./cmd/vortex
 ./my-agent
 ```
 
-两种方式都没指定时启动报错。烧录目标是框架 `config` 包的 `DefaultPath` 变量——**下游项目
-引入本框架后，用自己的构建命令烧录同一个变量即可**，运行时读到的就是烧录值；在代码里
-`config.DefaultPath` 也可以直接当默认值读（如作为 `-config` flag 的默认值）。
+配置文件里**留空的路径字段会自动解析进 group 目录**；显式指定的路径保持原样（可用于
+有意跨 agent 共享数据等场景）。group 和路径都未指定时启动报错。
 
 | 字段 | 说明 |
 |------|------|
@@ -155,19 +163,18 @@ go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=vortex/
 
 ### 一机多 Agent 部署
 
-一台机器跑多个 agent 时，每个 agent 一份独立的 `-config` 配置文件，且**配置内的本地状态路径
-必须互相独立**——JSON 会话存储是进程内快照整文件覆盖写，多个进程指向同一个文件会互相丢数据：
+一台机器跑多个 agent 时，每个 agent 一个独立 group——配置与会话/记忆/目标/卸载文件
+天然隔离在各自的 `~/.vortex/<group>/` 下，无需逐项配置路径（JSON 会话存储是整文件
+覆盖写，共用路径会互相丢数据，group 模式从布局上杜绝了这一点）：
 
-```json
-{
-  "session": { "type": "json", "file": "vortex/deploy_agent/my-agent.sessions.json" },
-  "tools":   { "memory": { "enabled": true, "dir": "vortex/deploy_agent/my-agent.memory" } }
-}
+```bash
+vortex -group agent-a -addr :8081
+vortex -group agent-b -addr :8082
 ```
 
-- `vortex-serve` 多实例时，每个进程用不同的 `-addr` 端口
-- 自治 agent 的 `autonomous.goal_store.file` 同理，各 agent 指向独立文件
-- `.env` 按进程工作目录加载，不同 agent 建议各用独立的工作目录
+也可以给每个 agent 单独构建一个烧录了 group 名的二进制（见上）。仅当需要**有意共享**
+某类数据（如多个 agent 共用一份记忆）时，才在配置文件里写显式路径。`vortex-serve`
+多实例注意端口错开；`.env` 按进程工作目录加载，不同 agent 建议各用独立的工作目录。
 
 ## 用框架构建你自己的 agent
 
@@ -191,8 +198,9 @@ go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=vortex/
 8. **复用配置文件加载（可选）**：`config` 包提供与参考 CLI 同源的配置 schema，
    `config.LoadConfig(path)` 直接解析为 `config.Config`（provider / session / tools /
    autonomous 等），配套 `config.ExpandPath`、`config.LoadDotEnv`、`config.GoalFromConfig`。
-   默认路径可在构建时烧录：`go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultPath=..."`，
-   运行时用 `-config` 覆盖。
+   数据隔离用 group：构建时烧录 `config.DefaultGroup`，运行时经 `config.ResolveConfigPath`
+   定位 `~/.vortex/<group>/agent.json`，再由 `cfg.ResolveGroupDefaults(group)` 把留空的
+   会话/记忆/目标/卸载路径解析进 group 目录。
 
 ## 开发
 

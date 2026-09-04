@@ -22,24 +22,31 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", config.DefaultPath, "配置文件路径（必填，如 ./vortex/deploy_agent/my-agent.json；可构建时烧录，运行时可覆盖）")
+	group := flag.String("group", config.DefaultGroup, "agent group 名（数据隔离在 ~/.vortex/<group>/ 下，可构建时烧录）")
+	configPath := flag.String("config", "", "配置文件路径（默认 ~/.vortex/<group>/agent.json）")
 	addr := flag.String("addr", ":8080", "监听地址")
 	flag.Parse()
 
-	if *configPath == "" {
-		fmt.Fprintln(os.Stderr, "错误: 未指定配置文件路径：构建时 -ldflags \"-X github.com/capyflow/vortexagent/config.DefaultPath=路径\" 烧录，或运行时 -config 传入")
+	path, effectiveGroup, err := config.ResolveConfigPath(*configPath, *group)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误:", err)
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "错误: 配置文件不存在:", *configPath)
-		fmt.Fprintln(os.Stderr, "请先运行 vortex 创建配置")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "错误: 配置文件不存在:", path)
+		fmt.Fprintf(os.Stderr, "请先创建，例如: vortex -group %s（或 vortex -config %s）\n", *group, path)
 		os.Exit(1)
 	}
 
-	cfg, err := config.LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(path)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误:", err)
+		os.Exit(1)
+	}
+	// group 模式下，把留空的会话/目标等路径解析进 ~/.vortex/<group>/
+	if err := cfg.ResolveGroupDefaults(effectiveGroup); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}

@@ -31,11 +31,11 @@
     },
     "memory": {
       "enabled": false,
-      "dir": "~/.vortex/memory"
+      "dir": ""
     }
   },
   "session": {
     "type": "json",
-    "file": "~/.vortex/sessions.json"
+    "file": ""
   }
 }
