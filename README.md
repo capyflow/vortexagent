@@ -1,32 +1,37 @@
-# Vortex — 通用 Agent 框架（Go）
+English | [简体中文](README.zh-CN.md)
 
-用 Go 编写的**通用 agent 框架**：提供统一 LLM 接入、agent 循环、工具系统、生命周期钩子与会话存储，
-可以用它构建任意领域的 agent——文档问答、代码助手、运维机器人……领域能力全部来自可插拔的
-**工具（Tool）** 与提示词，框架本身与任何具体领域无关。
+# Vortex — A General-Purpose Agent Framework in Go
 
-- **框架核心**：`llm/`（统一 LLM 协议与多厂商适配）、`agent/`（运行时：循环 / 工具 / 会话 / 钩子 / 存储）
-- **内置扩展**：`tools/mcp/`（MCP 客户端，接入任意语言编写的自定义工具）、`tools/knowledge/`（本地文档知识库工具）、`tools/exec/` 与 `tools/filesystem/`（本机执行与文件读写，可经 CLI 的 `tools` 配置启用）
-- **参考应用**：`cmd/vortex/`（通用 REPL CLI）、`examples/`（框架用法示例）
+Vortex is a **general-purpose agent framework** written in Go. It provides unified LLM access,
+an agent loop, a tool system, lifecycle hooks, and session storage — everything you need to build
+agents for any domain: document Q&A, coding assistants, ops bots… Domain capabilities come entirely
+from pluggable **tools** and prompts; the framework itself is domain-agnostic.
 
-架构设计借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（91k stars 的 TS 编码 agent 工具包）的分层思想。
+- **Framework core**: `llm/` (unified LLM protocol with multi-vendor adapters), `agent/` (runtime: loop / tools / sessions / hooks / storage)
+- **Built-in extensions**: `tools/mcp/` (MCP client for custom tools written in any language), `tools/knowledge/` (local document knowledge base), `tools/exec/` and `tools/filesystem/` (shell execution and file access, enabled via the CLI's `tools` config)
+- **Reference apps**: `cmd/vortex/` (general-purpose REPL CLI), `examples/` (framework usage examples)
 
-> **想学 agent 开发？** 两条路：
-> - 想快速了解与上手：[docs/usage.md](docs/usage.md) —— 项目介绍、优点、各功能使用说明
-> - 初学者：从 [docs/tutorial.md](docs/tutorial.md) 开始 —— 10 节课动手搭起自己的 agent
-> - 想理解设计：读 [docs/architecture.md](docs/architecture.md) —— 框架分层原理与设计决策
-> - 文档总入口：[docs/README.md](docs/README.md)
+The architecture borrows the layering ideas of
+[earendil-works/pi](https://github.com/earendil-works/pi), a TS coding-agent toolkit with 91k stars.
 
-## 快速开始
+> **Want to learn agent development?** The in-repo docs are written in Chinese:
+> - Quick overview & getting started: [docs/usage.md](docs/usage.md) — what the project is, its strengths, and feature guides
+> - Beginners: start with [docs/tutorial.md](docs/tutorial.md) — build your own agent in 10 hands-on lessons
+> - Design deep-dive: [docs/architecture.md](docs/architecture.md) — framework layering principles and design decisions
+> - Docs home: [docs/README.md](docs/README.md)
 
-### 方式一：作为库使用（推荐）
+## Quick Start
 
-你的应用直接 import 框架包，四步搭起一个 agent（完整代码见 `examples/minimal-agent`）：
+### Option 1: Use as a library (recommended)
+
+Import the framework packages directly and assemble an agent in four steps
+(full code in `examples/minimal-agent`):
 
 ```go
 provider, _ := llm.NewProvider(llm.ProviderConfig{Name: "openai", APIKey: apiKey})
 
 registry := agent.NewRegistry()
-registry.Add(&myTool{})          // 实现 agent.Tool 接口即可
+registry.Add(&myTool{})          // just implement the agent.Tool interface
 
 ag := agent.New(agent.Options{
     Provider: provider,
@@ -34,161 +39,171 @@ ag := agent.New(agent.Options{
     OnDelta:  func(d llm.Delta) { fmt.Print(d.Text) },
 })
 
-answer, _ := ag.Ask(ctx, agent.NewSession("default"), "你的问题")
+answer, _ := ag.Ask(ctx, agent.NewSession("default"), "your question")
 ```
 
-### 方式二：运行参考 CLI
+### Option 2: Run the reference CLI
 
 ```bash
-# 1. 配置 API 密钥（三选一，对应 vortex.json 中的 provider.name）
-#    也可以把密钥写进项目根目录的 .env 文件（每行一条 KEY=VALUE，已存在的环境变量优先）
-export OPENAI_API_KEY=sk-...        # OpenAI 兼容（DeepSeek/Qwen/智谱等）
+# 1. Configure an API key (pick one, matching provider.name in vortex.json)
+#    You can also put the key in a .env file at the project root (one KEY=VALUE per line;
+#    already-set environment variables take precedence)
+export OPENAI_API_KEY=sk-...        # OpenAI-compatible (DeepSeek/Qwen/Zhipu, etc.)
 # export ANTHROPIC_API_KEY=sk-ant-...
 # export GEMINI_API_KEY=...
 
-# 2. 运行（首次启动进入配置向导；-group 决定数据目录 ~/.vortex/my-agent/）
+# 2. Run (first launch enters an interactive setup wizard; -group decides the data
+#    directory ~/.vortex/my-agent/)
 go run ./cmd/vortex -group my-agent
-#    不想用 group 的话，也可以显式指定配置：go run ./cmd/vortex -config 路径/agent.json
+#    Prefer not to use a group? Point at a config file explicitly:
+#    go run ./cmd/vortex -config path/to/agent.json
 ```
 
-交互界面：直接输入问题回车，`/tools` 查看可用工具，`/clear` 清空历史，`/exit`（或 `/quit`）退出。
+Interacting: type a question and press enter. `/tools` lists available tools, `/clear` wipes
+history, `/exit` (or `/quit`) quits.
 
-### 方式三：跑示例
+### Option 3: Run the examples
 
 ```bash
 export OPENAI_API_KEY=sk-...
-go run ./examples/minimal-agent "现在几点了？"      # 最小 agent（内置时间工具）
-go run ./examples/knowledge-agent "框架支持哪些厂商？" # 文档问答 agent（知识库扩展）
-go run ./examples/customer-service-agent "数据线坏了要退款" # 智能客服 agent（子 agent 编排）
-go run ./examples/async-agent "采购 50 台打印机做评估"    # 异步任务编排（并行分发 + 收取结果）
-go run ./examples/mcp-server                        # MCP server 模板（自定义工具）
+go run ./examples/minimal-agent "what time is it?"              # minimal agent (built-in time tool)
+go run ./examples/knowledge-agent "which vendors are supported?" # document Q&A agent (knowledge base)
+go run ./examples/customer-service-agent "my cable is broken, refund please" # support agent (sub-agent orchestration)
+go run ./examples/async-agent "procure 50 printers for evaluation" # async task orchestration (fan-out + collect)
+go run ./examples/mcp-server                                     # MCP server template (custom tools)
 ```
 
-## 架构
+## Architecture
 
 ```
-cmd/vortex/        参考应用：通用 REPL CLI（配置驱动，组装框架全部能力）
-cmd/vortex-serve/  参考应用：HTTP 服务模式（SSE 流式接口 + webhook，可挂载自治 agent）
-examples/          框架用法示例（minimal / knowledge / customer-service / async / mcp-server）
-├──────────────────────── 框架核心（你的应用依赖的就是这些包）────────────────────────
-llm/               统一 LLM API
-  protocol.go      统一消息/工具/流式协议
-  openai.go        OpenAI 兼容层（DeepSeek/Qwen/智谱等）
-  anthropic.go     Anthropic Messages API（含思考模式）
+cmd/vortex/        Reference app: general-purpose REPL CLI (config-driven, wires up all framework capabilities)
+cmd/vortex-serve/  Reference app: HTTP server mode (SSE streaming + webhooks, optional autonomous agent)
+examples/          Framework usage examples (minimal / knowledge / customer-service / async / mcp-server)
+├──────────────────── Framework core (the packages your app depends on) ────────────────────
+llm/               Unified LLM API
+  protocol.go      Unified message / tool / streaming protocol
+  openai.go        OpenAI-compatible layer (DeepSeek, Qwen, Zhipu, etc.)
+  anthropic.go     Anthropic Messages API (incl. thinking mode)
   gemini.go        Google Gemini API
-agent/             Agent 运行时
-  agent.go         Agent 本体与配置（Options / New / 默认提示词）
-  ask.go           Ask 循环：LLM → 工具调用 → 执行 → 循环，直到最终回答
-  tool.go          工具接口与注册表
-  session.go       会话消息历史
-  hooks.go         生命周期钩子（日志/遥测/权限拦截）
-  store.go         会话存储抽象（内存 / JSON 文件实现）
-autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性），配合 vortex-serve 运行
-config/            配置文件 schema 与加载（agent group 数据隔离：~/.vortex/<group>/）
-├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
-tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
-tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
-tools/exec/        shell 命令执行工具（超时封顶、输出安全截断）
-tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权）
+agent/             Agent runtime
+  agent.go         Agent core & configuration (Options / New / default prompt)
+  ask.go           The Ask loop: LLM → tool calls → execute → repeat until the final answer
+  tool.go          Tool interface & registry
+  session.go       Conversation message history
+  hooks.go         Lifecycle hooks (logging / telemetry / interception)
+  store.go         Session storage abstraction (in-memory / JSON file implementations)
+autonomous/        Autonomous agent: goal storage & scheduling (cron / interval / one-shot); runs alongside vortex-serve
+config/            Config file schema & loading (agent group data isolation under ~/.vortex/<group>/)
+├──────────────────── Built-in extensions (optional; register as needed) ────────────────────
+tools/mcp/         MCP client: connect to MCP servers written in any language
+tools/knowledge/   Local document knowledge base: directory scan + full-text keyword search tools
+tools/exec/        Shell command execution tool (timeout cap, safe output truncation)
+tools/filesystem/  File read/write toolset (paths confined to a root, prevents escape)
 ```
 
-### Agent 循环（agent/ask.go）
+### The agent loop (agent/ask.go)
 
 ```
-用户提问 → 携带历史+工具声明调用 LLM
-  → 模型返回工具调用？ → 执行工具（钩子可拦截）→ 结果回传 → 继续
-  → 模型给出最终回答 → 返回
+User asks → call LLM with history + tool declarations
+  → tool calls returned? → execute tools (hooks may intercept) → feed results back → continue
+  → final answer returned → done
 ```
 
-循环上限 10 轮（`Options.MaxIterations` 可配），避免死循环。
+The loop is capped at 10 rounds (`Options.MaxIterations`) to prevent runaway cycles.
 
-## 框架能力
+## Framework capabilities
 
-| 能力 | 说明 |
+| Capability | Description |
 |------|------|
-| `llm.Provider` | 统一 LLM 接口，内置 openai（兼容）/ anthropic / gemini 三个适配器，换厂商只改一行配置 |
-| `agent.New` + `Ask` | 核心循环：多轮工具调度、失败自动回滚历史、空回答防护 |
-| `agent.Tool` + `Registry` | 结构化接口，实现 4 个方法即成为工具；重名保护、确定性工具声明排序 |
-| `agent.Hooks` | 生命周期钩子：`OnMessage` / `OnLLMCall`（含 token 消耗与耗时）/ `OnBeforeToolCall`（可拦截）/ `OnAfterToolCall` / `OnError` / `OnFinish` |
-| `agent.Checker` | 全局工具权限：执行模式（full_access / confirm / whitelist）+ allow/deny 规则 + 交互确认 UI；所有工具（含 MCP）在 Ask 循环统一拦截，deny 在任何模式下都生效 |
-| `agent.NewSubagentTool` | 子 agent 原语：把派生好的 Agent 包装成工具，父 agent 委派任务、只回收最终答复，多 agent 编排的基础 |
-| `agent.TaskHub` | 异步任务编排：`task_start` 分发后台任务（goroutine + channel 并发）、主 agent 继续自己的工作，`task_status` / `task_wait` / `task_cancel` 管理任务 |
-| `agent.WithJSONMode` | 结构化输出：要求本次回答只输出合法 JSON（OpenAI/Gemini 原生映射，Anthropic 系统提示约束） |
-| Skill 系统 | `SKILL.md` 发现与加载；`allowed-tools`（工具白名单，双重生效）、`model`、`temperature` 元数据均生效 |
-| `agent.SessionStore` | 会话持久化抽象，内置内存与 JSON 文件实现；接入 SQLite/Redis 只需实现 3 个方法 |
-| `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
-| `tools/exec` | 内置 shell 工具（exec_command）：超时与输出截断防护；自描述权限匹配器（`PermissionMatcherProvider`），`registry.Add` 后带参数模式的权限规则即按 shell 语义生效 |
-| `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
+| `llm.Provider` | Unified LLM interface with three built-in adapters — openai (compatible) / anthropic / gemini; switching vendors is a one-line config change |
+| `agent.New` + `Ask` | Core loop: multi-turn tool scheduling, automatic history rollback on failure, empty-answer protection |
+| `agent.Tool` + `Registry` | Structured interface — implement 4 methods to become a tool; duplicate-name protection and deterministic tool-declaration ordering |
+| `agent.Hooks` | Lifecycle hooks: `OnMessage` / `OnLLMCall` (token usage & latency) / `OnBeforeToolCall` (can block) / `OnAfterToolCall` / `OnError` / `OnFinish` |
+| `agent.Checker` | Global tool permissions: execution modes (full_access / confirm / whitelist) + allow/deny rules + interactive approval UI; every tool (incl. MCP) is intercepted in the Ask loop, and deny applies in every mode |
+| `agent.NewSubagentTool` | Sub-agent primitive: wrap a derived Agent as a tool; the parent delegates a task and only receives the final answer — the foundation of multi-agent orchestration |
+| `agent.TaskHub` | Async task orchestration: `task_start` dispatches background tasks (goroutine + channel concurrency) while the main agent keeps working; `task_status` / `task_wait` / `task_cancel` manage them |
+| `agent.WithJSONMode` | Structured output: forces the reply to be valid JSON (native mapping on OpenAI/Gemini, system-prompt constraint on Anthropic) |
+| Skill system | `SKILL.md` discovery & loading; `allowed-tools` (tool whitelist, enforced twice), `model` and `temperature` metadata all take effect |
+| `agent.SessionStore` | Session persistence abstraction with in-memory and JSON file implementations; plugging in SQLite/Redis only takes 3 methods |
+| `tools/mcp` | MCP client: spawns subprocess servers, auto-discovers and registers their tools |
+| `tools/exec` | Built-in shell tool (exec_command): timeout & output truncation guard; self-describing permission matchers (`PermissionMatcherProvider`) — after `registry.Add`, patterned permission rules apply with shell semantics |
+| `tools/knowledge` | Optional extension: document retrieval tools (`search_knowledge` / `read_document`, with path-escape protection) |
 
-## 配置文件（仅参考 CLI 使用）
+## Configuration file (reference CLI only)
 
-推荐用 **agent group** 管理配置与数据隔离：group 决定一组独立的本地数据目录
-`~/.vortex/<group>/`，配置、会话、长期记忆、自治目标、上下文卸载文件都默认落在其下：
+An **agent group** is the recommended way to manage configuration and data isolation: a group
+decides an independent local data directory `~/.vortex/<group>/` where the config, sessions,
+long-term memory, autonomous goals, and context-offload files live by default:
 
 ```
-~/.vortex/<group>/agent.json      配置文件
-~/.vortex/<group>/sessions.json   会话存储（session.type=json 且 file 留空时）
-~/.vortex/<group>/memory/         长期记忆（tools.memory.dir 留空时）
-~/.vortex/<group>/goals.json      自治目标（autonomous.goal_store.file 留空时）
-~/.vortex/<group>/offload/        上下文卸载归档（下游项目接 FileSystemOffload 时）
+~/.vortex/<group>/agent.json      config file
+~/.vortex/<group>/sessions.json   session storage (when session.type=json and file is empty)
+~/.vortex/<group>/memory/         long-term memory (when tools.memory.dir is empty)
+~/.vortex/<group>/goals.json      autonomous goals (when autonomous.goal_store.file is empty)
+~/.vortex/<group>/offload/        context offload archive (when wiring up FileSystemOffload)
 ```
 
-配置来源优先级：`-config` 显式路径 > group（运行时 `-group` 或构建时烧录）> 烧录 `DefaultPath`：
+Config resolution order: explicit `-config` path > group (`-group` at runtime or baked in at
+build time) > baked-in `DefaultPath`:
 
 ```bash
-# 运行时指定 group
+# Specify a group at runtime
 go run ./cmd/vortex -group my-agent
 go run ./cmd/vortex-serve -group my-agent -addr :8080
 
-# 构建时烧录 group 名，运行后无需任何参数
-# 烧录目标是框架 config 包的 DefaultGroup——下游项目引入框架后，用自己的构建命令
-# 烧录同一个变量即可；代码里也可直接读 config.DefaultGroup 作默认值
+# Bake the group name in at build time — the binary then needs no arguments
+# The bake target is DefaultGroup in the framework's config package. Downstream projects can
+# bake the same variable with their own build command, or read config.DefaultGroup in code.
 go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultGroup=my-agent" -o my-agent ./cmd/vortex
 ./my-agent
 ```
 
-配置文件里**留空的路径字段会自动解析进 group 目录**；显式指定的路径保持原样（可用于
-有意跨 agent 共享数据等场景）。group 和路径都未指定时启动报错。
+**Empty path fields in the config file are resolved into the group directory automatically**;
+explicitly specified paths are kept as-is (useful for intentionally sharing data across
+agents). Startup fails when neither a group nor a path is given.
 
-| 字段 | 说明 |
+| Field | Description |
 |------|------|
 | `provider.name` | `openai` / `anthropic` / `gemini` |
-| `provider.apiKeyEnv` | API 密钥环境变量名，空则按默认查找 |
-| `provider.baseURL` | 自定义服务地址（OpenAI 兼容厂商填这里） |
-| `provider.model` | 模型名称 |
-| `provider.thinking` | 是否启用思考模式（如 DeepSeek R1 / Claude） |
-| `knowledge` | 知识库根目录列表（可选，注册 search/read 工具） |
-| `tools` | 内置工具开关（可选）：`tools.exec` 启用 shell 执行、`tools.filesystem` 启用文件读写（路径限制在 root 内）、`tools.memory` 启用长期记忆，默认全关 |
-| `permissions` | 全局工具权限（可选）：执行模式 + allow/deny 规则，见下文「工具权限与确认」 |
-| `mcpServers` | MCP server 列表，启动时自动连接并注册全部工具（可选） |
-| `systemPrompt` | 自定义系统提示词 |
-| `session` | 会话持久化（可选）：`session.type` 为 `memory`（默认）/ `json` / `postgres`，`session.file` 为 JSON 存储路径，启用后重启可继续上次对话 |
+| `provider.apiKeyEnv` | Environment variable holding the API key; falls back to the default name |
+| `provider.baseURL` | Custom endpoint (for OpenAI-compatible vendors) |
+| `provider.model` | Model name |
+| `provider.thinking` | Enable thinking mode (e.g. DeepSeek R1 / Claude) |
+| `knowledge` | Knowledge base root directories (optional; registers search/read tools) |
+| `tools` | Built-in tool switches (optional): `tools.exec` enables shell execution, `tools.filesystem` enables file access (paths confined to a root), `tools.memory` enables long-term memory — all off by default |
+| `permissions` | Global tool permissions (optional): execution mode + allow/deny rules — see "Tool permissions & approval" below |
+| `mcpServers` | MCP server list; connected and their tools registered automatically at startup (optional) |
+| `systemPrompt` | Custom system prompt |
+| `session` | Session persistence (optional): `session.type` is `memory` (default) / `json` / `postgres`; `session.file` is the JSON storage path — with it, conversations survive restarts |
 
-### 一机多 Agent 部署
+### Multi-agent deployment on one machine
 
-一台机器跑多个 agent 时，每个 agent 一个独立 group——配置与会话/记忆/目标/卸载文件
-天然隔离在各自的 `~/.vortex/<group>/` 下，无需逐项配置路径（JSON 会话存储是整文件
-覆盖写，共用路径会互相丢数据，group 模式从布局上杜绝了这一点）：
+Run multiple agents on one machine by giving each its own group — config, sessions, memory,
+goals, and offload files stay naturally isolated under their own `~/.vortex/<group>/`
+(no per-path configuration needed; the JSON session store rewrites the whole file, so sharing
+a path would lose data — the group layout rules that out by construction):
 
 ```bash
 vortex -group agent-a -addr :8081
 vortex -group agent-b -addr :8082
 ```
 
-也可以给每个 agent 单独构建一个烧录了 group 名的二进制（见上）。仅当需要**有意共享**
-某类数据（如多个 agent 共用一份记忆）时，才在配置文件里写显式路径。`vortex-serve`
-多实例注意端口错开；`.env` 按进程工作目录加载，不同 agent 建议各用独立的工作目录。
+Alternatively, build one binary per agent with the group name baked in (see above). Write
+explicit paths in the config only when **intentionally sharing** a kind of data (e.g. several
+agents sharing one memory store). For multiple `vortex-serve` instances, use distinct ports;
+`.env` is loaded from the process working directory, so give each agent its own working directory.
 
-## 工具权限与确认
+## Tool permissions & approval
 
-所有工具（内置与 MCP）在每次执行前经过全局权限检查（`agent.Checker`，在 Ask 循环的
-工具分发点统一拦截），按执行模式决定"没命中规则时问不问"：
+Every tool — built-in or MCP — passes a global permission check before each execution
+(`agent.Checker`, enforced at the tool-dispatch point of the Ask loop). The execution mode
+decides what happens when no rule matches:
 
-| 模式 | 行为 |
+| Mode | Behavior |
 |------|------|
-| `full_access` | 全部放行，不询问（deny 规则仍然拦截） |
-| `confirm`（默认） | 放行规则未命中的调用询问用户：y 允许 / n 拒绝 / a 本会话总是允许 |
-| `whitelist` | 仅 allow 规则命中的调用可执行，其余直接拒绝 |
+| `full_access` | Allow everything, no prompting (deny rules still block) |
+| `confirm` (default) | Calls not matched by allow rules prompt the user: y allow / n deny / a always allow this session |
+| `whitelist` | Only calls matched by allow rules run; everything else is rejected |
 
 ```json
 "permissions": {
@@ -198,70 +213,79 @@ vortex -group agent-b -addr :8082
 }
 ```
 
-- **规则格式**：`工具名` 或 `工具名:参数模式`（按第一个冒号切分），工具名支持尾缀 `*` 通配。
-  MCP 工具名带命名空间：`mcp__<server>` 覆盖整个 server，`mcp__<server>__<tool>` 单个工具
-- **exec_command 的参数模式按 shell 命令理解**，宽严刻意不同：allow 从严——复合命令
-  （`;` `&&` `||` `|`）要求每一段都命中，`git status*` 放行不了 `git status; rm -rf /`；
-  deny 从宽——对整条命令做词边界扫描，藏在命令替换里的 `echo $(rm -rf /)` 也拦得住，
-  而无关词（如 `format` 之于 `rm`）不误伤
-- **优先级**：本会话记住的允许 > deny > allow > 模式；deny 在任何模式（含 full_access）下生效
-- REPL 里 `/mode` 查看/切换执行模式、`/permissions` 查看规则
-- 无交互环境（vortex-serve）中 confirm 的问询自动降级为拒绝；需要自动执行的调用请配置
-  allow 规则、whitelist 模式或 full_access
-- 这是字符串级过滤，防模型误用；防不了蓄意构造的绕过，高危环境请配合操作系统级沙箱
+- **Rule format**: `tool` or `tool:pattern` (split at the first colon); tool names support a
+  trailing `*` wildcard. MCP tool names are namespaced: `mcp__<server>` covers an entire server,
+  `mcp__<server>__<tool>` targets a single tool
+- **exec_command patterns are interpreted as shell commands**, deliberately asymmetric:
+  allow is strict — compound commands (`;` `&&` `||` `|`) must match segment by segment, so
+  `git status*` cannot approve `git status; rm -rf /`; deny is loose — a word-boundary scan of
+  the whole command catches `echo $(rm -rf /)` hidden inside command substitution, while
+  unrelated words (like `format` vs `rm`) don't trip it
+- **Precedence**: session-remembered approvals > deny > allow > mode; deny applies in every
+  mode (including full_access)
+- `/mode` views/switches the execution mode and `/permissions` lists rules in the REPL
+- In headless environments (vortex-serve), confirm prompts automatically degrade to rejection;
+  configure allow rules, the whitelist mode, or full_access for calls that must run unattended
+- This is string-level filtering that guards against model misuse — it cannot stop deliberately
+  crafted bypasses; pair it with an OS-level sandbox in high-risk environments
 
-完整的功能描述与接入指南（库方式接入、自定义匹配器/确认 UI/检查器）见 [docs/permissions.md](docs/permissions.md)。
+For the full feature description and integration guide (library usage, custom matchers /
+approval UI / checkers), see [docs/permissions.md](docs/permissions.md) (Chinese).
 
-## 用框架构建你自己的 agent
+## Build your own agent with the framework
 
-1. **写一个工具**：实现 `agent.Tool` 的 `Name / Description / Schema / Call` 四个方法，注册进 `Registry`。
-   工具是 agent 能力的唯一来源——框架不内置任何业务工具。
-2. **接入自定义工具（MCP）**：任何语言实现一个 MCP server（见 `examples/mcp-server` 模板），
-   或在 CLI 的 `mcpServers` 中声明，agent 自动发现并调用。Python/Node 生态的现成
-   MCP server（filesystem、fetch 等）同样适用。
-3. **加知识库（可选）**：注册 `knowledge.NewKBTools(kb)` 即可获得文档检索能力，
-   不注册则 agent 与文档毫无关系。
-4. **观察与拦截**：通过 `agent.Hooks` 记录每条消息、拦截危险工具调用（权限控制）、
-   收集遥测、上报错误。
-5. **持久化会话**：设置 `Options.Store`，每次 Ask 自动保存；用 `JSONSessionStore` 可
-   实现"重启后继续上次对话"。
-6. **换模型厂商**：`llm.NewProvider` 改 `Name` 即可，循环与工具完全不用改。
-7. **多 agent 编排（子 agent）**：为不同专员场景各建一个 Agent（独立系统提示词与工具箱），
-   用 `agent.NewSubagentTool`（同步委派，当轮拿结果）或 `agent.TaskHub`（异步分发，
-   主 agent 继续自己的工作、稍后收结果）注册进总机 agent 的 Registry——智能客服、
-   编码 agent 的"总-分"结构由此衍生（见 `examples/customer-service-agent` 与
-   `examples/async-agent`）。
-8. **复用配置文件加载（可选）**：`config` 包提供与参考 CLI 同源的配置 schema，
-   `config.LoadConfig(path)` 直接解析为 `config.Config`（provider / session / tools /
-   autonomous 等），配套 `config.ExpandPath`、`config.LoadDotEnv`、`config.GoalFromConfig`。
-   数据隔离用 group：构建时烧录 `config.DefaultGroup`，运行时经 `config.ResolveConfigPath`
-   定位 `~/.vortex/<group>/agent.json`，再由 `cfg.ResolveGroupDefaults(group)` 把留空的
-   会话/记忆/目标/卸载路径解析进 group 目录。
+1. **Write a tool**: implement the four `agent.Tool` methods (`Name / Description / Schema / Call`)
+   and register it in the `Registry`. Tools are the only source of agent capabilities — the
+   framework ships no business tools of its own.
+2. **Integrate custom tools (MCP)**: implement an MCP server in any language (see the
+   `examples/mcp-server` template) or declare one under the CLI's `mcpServers`; the agent
+   discovers and calls them automatically. Off-the-shelf Python/Node MCP servers (filesystem,
+   fetch, …) work too.
+3. **Add a knowledge base (optional)**: register `knowledge.NewKBTools(kb)` for document
+   retrieval; without it, the agent knows nothing about your documents.
+4. **Observe & intercept**: use `agent.Hooks` to log messages, block dangerous tool calls
+   (permission control), collect telemetry, and report errors.
+5. **Persist sessions**: set `Options.Store` and every Ask auto-saves; `JSONSessionStore`
+   gives "resume the last conversation after restart".
+6. **Switch model vendors**: change `Name` in `llm.NewProvider` — the loop and tools stay untouched.
+7. **Multi-agent orchestration (sub-agents)**: build one Agent per specialist scenario (its own
+   system prompt and toolbox) and register it into the dispatcher agent's Registry with
+   `agent.NewSubagentTool` (synchronous delegation, result in the same turn) or `agent.TaskHub`
+   (async dispatch, results collected later) — this is how support-desk and coding-agent
+   hub-and-spoke structures are derived (see `examples/customer-service-agent` and
+   `examples/async-agent`).
+8. **Reuse config loading (optional)**: the `config` package exposes the same schema the
+   reference CLI uses — `config.LoadConfig(path)` parses straight into `config.Config`
+   (provider / session / tools / autonomous, etc.), with `config.ExpandPath`,
+   `config.LoadDotEnv` and `config.GoalFromConfig` alongside. For data isolation use groups:
+   bake `config.DefaultGroup` at build time, resolve `~/.vortex/<group>/agent.json` via
+   `config.ResolveConfigPath`, then let `cfg.ResolveGroupDefaults(group)` fill the empty
+   session/memory/goal/offload paths into the group directory.
 
-## 开发
+## Development
 
 ```bash
-go build ./...            # 编译
-go test ./...             # 全部测试（含端到端集成测试，不依赖真实 API）
-go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json   # 本地运行参考 CLI
+go build ./...            # build
+go test ./...             # all tests (incl. end-to-end integration tests; no real API needed)
+go run ./cmd/vortex -config vortex/deploy_agent/my-agent.json   # run the reference CLI locally
 ```
 
-### 测试策略
+### Testing strategy
 
-- `llm/*_test.go`：httptest mock 各厂商 API，验证请求体序列化与响应解析
-- `agent/loop_test.go`：fake provider 验证工具循环、回滚、空回答等逻辑
-- `agent/hooks_test.go`：钩子触发顺序与拦截行为
-- `agent/store_test.go`：会话存储存取、快照语义、JSON 落盘重载
-- `agent/e2e_test.go`：全链路端到端（mock OpenAI + 知识库扩展 + 工具循环）
-- `tools/mcp/client_test.go`：真实拉起子进程 MCP server 验证协议握手
+- `llm/*_test.go`: httptest mocks of each vendor API — request serialization & response parsing
+- `agent/loop_test.go`: fake provider covering the tool loop, rollback, empty answers, etc.
+- `agent/hooks_test.go`: hook ordering and interception behavior
+- `agent/store_test.go`: session storage CRUD, snapshot semantics, JSON round-trips
+- `agent/e2e_test.go`: full-stack end-to-end (mock OpenAI + knowledge base + tool loop)
+- `tools/mcp/client_test.go`: spawns a real subprocess MCP server to verify the protocol handshake
 
-## 路线图
+## Roadmap
 
-- [ ] 上下文压缩 compaction（历史超长时摘要，对应 pi 的 agent-harness）
-- [ ] 向量检索扩展（替换 knowledge 内部实现，或作为新扩展）
-- [ ] 多会话管理与分支
-- [ ] RPC / Server 模式（进程集成）
-- [ ] 更多内置扩展（shell、http、filesystem……）
+- [ ] Context compaction (summarize over-long history; the counterpart of pi's agent-harness)
+- [ ] Vector retrieval extension (replacing knowledge's internals, or as a new extension)
+- [ ] Multi-session management & branching
+- [ ] RPC / server mode (in-process integration)
+- [ ] More built-in extensions (shell, http, filesystem, …)
 
 ## License
 
