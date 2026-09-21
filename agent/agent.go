@@ -9,6 +9,7 @@
 //	tool.go    工具接口（Tool）与注册表（Registry）
 //	session.go 会话（Session）：对话历史与回滚
 //	hooks.go   生命周期钩子（Hooks）：观察与拦截扩展点
+//	permission.go 全局工具权限：执行模式 + allow/deny 规则 + 交互确认
 //	store.go   会话存储（SessionStore）：持久化抽象与内置实现
 //	skill.go   Skill 系统：技能发现、加载与管理
 package agent
@@ -33,6 +34,11 @@ type Options struct {
 	ParallelTools  bool
 	SkillManager   *SkillManager
 	MaxRetries     int
+
+	// Permissions 全局工具权限检查：每次工具执行前调用，非 VerdictAllow
+	// 的调用被拒绝（错误文本回传模型且不重试）。nil 表示不做权限控制。
+	// 见 permission.go 的 Checker（执行模式 + allow/deny 规则 + 交互确认）。
+	Permissions PermissionChecker
 }
 
 // DefaultSystemPrompt 默认系统提示词。
@@ -65,6 +71,7 @@ type Agent struct {
 	parallelTools  bool
 	skillManager   *SkillManager
 	maxRetries     int
+	perms          PermissionChecker
 }
 
 // New 创建 Agent。
@@ -92,6 +99,7 @@ func New(opts Options) *Agent {
 		parallelTools:  opts.ParallelTools,
 		skillManager:   opts.SkillManager,
 		maxRetries:     opts.MaxRetries,
+		perms:          opts.Permissions,
 	}
 }
 

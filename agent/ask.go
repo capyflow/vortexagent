@@ -203,6 +203,13 @@ func (a *Agent) execTool(ctx context.Context, call llm.ToolCall, skill *Skill) (
 			"工具 %q 不在当前技能 %q 的允许列表内（allowed-tools: %s）",
 			call.Name, skill.Metadata.Name, strings.Join(skill.Metadata.AllowedTools, ", "))}
 	}
+	if a.perms != nil {
+		if verdict, reason := a.perms.Check(ctx, CallInfo{Tool: call.Name, Args: call.Arguments}); verdict != VerdictAllow {
+			return "", &nonRetryableError{fmt.Errorf(
+				"工具 %q 被权限系统拒绝: %s。请勿重试相同调用；如确需执行，请让用户调整权限配置",
+				call.Name, reason)}
+		}
+	}
 	if a.hooks != nil && a.hooks.OnBeforeToolCall != nil {
 		if err := a.hooks.OnBeforeToolCall(ctx, call.Name, call.Arguments); err != nil {
 			return "", &nonRetryableError{fmt.Errorf("工具调用被拦截: %w", err)}

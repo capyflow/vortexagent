@@ -98,6 +98,10 @@ func serveTestServer() {
 	}
 }
 
+// helperNS 是测试 server（名称 test-server，清洗为 test_server）的工具名
+// 命名空间前缀：对模型暴露的名字为 mcp__<server>__<tool>。
+const helperNS = "mcp__test_server__"
+
 // connectHelper 连接测试 MCP server 并注册清理。
 func connectHelper(t *testing.T, mode string) *Client {
 	t.Helper()
@@ -141,7 +145,10 @@ func TestConnectAndListTools(t *testing.T) {
 		t.Fatalf("期望 3 个工具，实际 %d 个: %v", len(tools), c.toolNames())
 	}
 
-	echo := findTool(t, c, "echo")
+	echo := findTool(t, c, helperNS+"echo")
+	if got := echo.Name(); got != helperNS+"echo" {
+		t.Errorf("echo.Name() = %q, 期望命名空间化名称 %q", got, helperNS+"echo")
+	}
 	if got := echo.Description(); got != "原样回显传入的文本" {
 		t.Errorf("echo.Description() = %q", got)
 	}
@@ -167,7 +174,7 @@ func TestCallTool(t *testing.T) {
 	defer cancel()
 
 	// echo：字符串参数传递与结果返回
-	got, err := findTool(t, c, "echo").Call(ctx, map[string]any{"text": "hello mcp"})
+	got, err := findTool(t, c, helperNS+"echo").Call(ctx, map[string]any{"text": "hello mcp"})
 	if err != nil {
 		t.Fatalf("echo.Call() 错误: %v", err)
 	}
@@ -176,7 +183,7 @@ func TestCallTool(t *testing.T) {
 	}
 
 	// add：数值参数传递与结果返回
-	got, err = findTool(t, c, "add").Call(ctx, map[string]any{"x": 2.0, "y": 3.0})
+	got, err = findTool(t, c, helperNS+"add").Call(ctx, map[string]any{"x": 2.0, "y": 3.0})
 	if err != nil {
 		t.Fatalf("add.Call() 错误: %v", err)
 	}
@@ -185,7 +192,7 @@ func TestCallTool(t *testing.T) {
 	}
 
 	// fail：工具执行错误（isError 标记）转为 error 返回
-	_, err = findTool(t, c, "fail").Call(ctx, nil)
+	_, err = findTool(t, c, helperNS+"fail").Call(ctx, nil)
 	if err == nil {
 		t.Fatal("fail.Call() 应返回错误")
 	}
@@ -193,8 +200,9 @@ func TestCallTool(t *testing.T) {
 		t.Errorf("fail.Call() 错误信息 = %v", err)
 	}
 
-	// 调用 server 上不存在的工具：协议级错误
-	ghost := &Tool{name: "ghost", client: c.mcp}
+	// 调用 server 上不存在的工具：协议级错误。
+	// remoteName 是 server 侧的原始名字，tools/call 用它而非暴露名。
+	ghost := &Tool{name: helperNS + "ghost", remoteName: "ghost", client: c.mcp}
 	if _, err := ghost.Call(ctx, map[string]any{}); err == nil {
 		t.Error("未知工具的 Call() 应返回错误")
 	}
@@ -266,8 +274,8 @@ func TestToToolParams(t *testing.T) {
 		byName[p.Name] = p
 	}
 
-	echo := byName["echo"]
-	if echo.Name != "echo" {
+	echo := byName[helperNS+"echo"]
+	if echo.Name != helperNS+"echo" {
 		t.Errorf("name = %q", echo.Name)
 	}
 	if echo.Description != "原样回显传入的文本" {

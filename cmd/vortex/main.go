@@ -9,6 +9,8 @@
 //	/help    显示帮助
 //	/tools   列出当前可用的工具
 //	/clear   清空当前会话历史
+//	/mode    查看或切换执行模式（full_access / confirm / whitelist）
+//	/permissions 查看权限规则
 //	/exit    退出
 package main
 
@@ -114,8 +116,10 @@ func main() {
 
 	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP
 	registry := agent.NewRegistry()
+	// 权限检查器先于工具注册构建：exec.Register 会把命令匹配器接线进来。
+	perms := buildPermissions(cfg)
 	if cfg.Tools != nil {
-		registerBuiltinTools(registry, cfg.Tools)
+		registerBuiltinTools(registry, cfg.Tools, perms)
 	}
 	if len(cfg.Knowledge) > 0 {
 		kb := knowledge.NewKB(cfg.Knowledge)
@@ -215,6 +219,7 @@ func main() {
 		MaxTokens:    cfg.Provider.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
 		Store:        store,
+		Permissions:  perms,
 		OnDelta: func(d llm.Delta) {
 			if d.Thinking != "" {
 				fmt.Fprintf(os.Stderr, "\033[90m%s\033[0m", d.Thinking)
@@ -230,6 +235,11 @@ func main() {
 
 	fmt.Printf("vortex 通用 agent 已启动（provider=%s, model=%s, 工具: %s）\n",
 		provider.Name(), modelName(cfg), strings.Join(registry.Names(), ", "))
+	permNote := ""
+	if cfg.Permissions != nil && (len(cfg.Permissions.Allow) > 0 || len(cfg.Permissions.Deny) > 0) {
+		permNote = fmt.Sprintf("，allow %d 条 / deny %d 条", len(cfg.Permissions.Allow), len(cfg.Permissions.Deny))
+	}
+	fmt.Printf("权限: 执行模式 %s%s（/mode 切换，/permissions 查看）\n", perms.Mode(), permNote)
 	fmt.Println("输入问题开始对话，/help 查看命令。")
 
 	if lockManager != nil {
@@ -268,7 +278,7 @@ func main() {
 		if line == "" {
 			continue
 		}
-		if handleCommand(line, session, store, registry, &exit) {
+		if handleCommand(line, session, store, registry, perms, cfg.Permissions, &exit) {
 			if exit {
 				break
 			}
@@ -287,17 +297,40 @@ func main() {
 	}
 }
 
+// buildPermissions 从配置构造权限检查器：配置里的执行模式与 allow/deny
+// 规则 + 终端确认 UI。带参数模式的规则（如 exec_command:git status*）能按
+// shell 命令语义匹配，靠的是 exec.Register 接线的命令匹配器。
+func buildPermissions(cfg *config.Config) *agent.Checker {
+	pcfg := agent.PermissionConfig{}
+	if cfg.Permissions != nil {
+		pcfg.Mode = agent.Mode(cfg.Permissions.Mode)
+		pcfg.Allow = cfg.Permissions.Allow
+		pcfg.Deny = cfg.Permissions.Deny
+	}
+	workdir := "."
+	if cfg.Tools != nil && cfg.Tools.Exec != nil && cfg.Tools.Exec.Workdir != "" {
+		workdir = cfg.Tools.Exec.Workdir
+	}
+	checker, err := agent.NewChecker(pcfg, terminalApprovalUI(workdir))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: 权限配置无效:", err)
+		os.Exit(1)
+	}
+	return checker
+}
+
 // registerBuiltinTools 按配置注册内置工具（exec / filesystem / memory）。
-func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
+func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig, perms *agent.Checker) {
 	if cfg.Exec != nil && cfg.Exec.Enabled {
 		workdir := cfg.Exec.Workdir
 		if workdir == "" {
 			workdir = "."
 		}
-		if err := registry.Add(exec.NewExecTool(workdir)); err != nil {
+		// 一站式注册：工具 + 权限命令匹配器一次接线
+		if err := exec.Register(registry, perms, workdir); err != nil {
 			fmt.Fprintln(os.Stderr, "警告:", err)
 		} else {
-			fmt.Printf("已启用内置工具: exec_command（工作目录 %s，建议配合权限钩子限制命令）\n", workdir)
+			fmt.Printf("已启用内置工具: exec_command（工作目录 %s，受 permissions 权限控制）\n", workdir)
 		}
 	}
 	if cfg.Filesystem != nil && cfg.Filesystem.Enabled {
@@ -339,7 +372,7 @@ func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
 }
 
 // handleCommand 处理斜杠命令，返回 (是否已处理, 是否退出)。
-func handleCommand(line string, session *sessionstore.Session, store sessionstore.Store, registry *agent.Registry, exit *bool) bool {
+func handleCommand(line string, session *sessionstore.Session, store sessionstore.Store, registry *agent.Registry, perms *agent.Checker, permCfg *config.PermissionsConfig, exit *bool) bool {
 	switch {
 	case line == "/exit" || line == "/quit":
 		*exit = true
@@ -347,6 +380,7 @@ func handleCommand(line string, session *sessionstore.Session, store sessionstor
 	case line == "/help":
 		fmt.Println("命令: /help 帮助  /tools 工具列表  /clear 清空历史")
 		fmt.Println("      /sessions 会话列表  /new 新建会话  /switch ID 切换会话  /delete ID 删除会话")
+		fmt.Println("      /mode [模式] 查看/切换执行模式（full_access / confirm / whitelist）  /permissions 权限规则")
 		fmt.Println("      /exit 退出")
 		return true
 	case line == "/tools":
@@ -362,6 +396,35 @@ func handleCommand(line string, session *sessionstore.Session, store sessionstor
 	case line == "/clear":
 		session.Clear()
 		fmt.Println("会话历史已清空")
+		return true
+	case line == "/mode":
+		fmt.Printf("当前执行模式: %s\n", perms.Mode())
+		fmt.Println("可选: full_access（全放行，deny 规则仍拦截）/ confirm（执行前询问，默认）/ whitelist（仅 allow 规则可执行）")
+		fmt.Println("用法: /mode <模式>（仅本进程有效，不改配置文件）")
+		return true
+	case strings.HasPrefix(line, "/mode "):
+		arg := strings.TrimSpace(strings.TrimPrefix(line, "/mode"))
+		m, err := agent.ParseMode(arg)
+		if err != nil {
+			fmt.Println("错误:", err)
+			return true
+		}
+		perms.SetMode(m)
+		fmt.Printf("执行模式已切换为 %s（仅本进程有效）\n", m)
+		return true
+	case line == "/permissions":
+		if permCfg == nil || (len(permCfg.Allow) == 0 && len(permCfg.Deny) == 0) {
+			fmt.Println("未配置 allow/deny 规则（配置文件 permissions 段）")
+			return true
+		}
+		fmt.Println("allow 规则（命中即放行）:")
+		for _, r := range permCfg.Allow {
+			fmt.Printf("  + %s\n", r)
+		}
+		fmt.Println("deny 规则（命中即拒绝，任何模式生效）:")
+		for _, r := range permCfg.Deny {
+			fmt.Printf("  - %s\n", r)
+		}
 		return true
 	case line == "/sessions":
 		handleSessions(session, store)

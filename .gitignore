@@ -7,5 +7,7 @@
 vortex.json
 
 # 编译产物，走 CI/release 构建，不进仓库
-vortex
+# （必须锚定根目录：裸名字会连 cmd/vortex/ 源码目录一起忽略，
+#   新增文件会被 git 静默吞掉）
+/vortex
 /vortex-serve

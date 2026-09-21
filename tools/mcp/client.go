@@ -119,16 +119,36 @@ func (c *Client) listTools(ctx context.Context) ([]*Tool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mcp %s: tools/list 失败: %w", c.name, err)
 	}
+	prefix := "mcp__" + namespaceSegment(c.name) + "__"
 	tools := make([]*Tool, 0, len(result.Tools))
 	for _, mt := range result.Tools {
 		tools = append(tools, &Tool{
-			name:        mt.Name,
+			// 对模型暴露带命名空间的名字：权限规则可按 server（mcp__github）
+			// 或单工具（mcp__github__x）配置；多个 server 暴露同名工具也不再
+			// 在 Registry 里冲突。
+			name:        prefix + mt.Name,
+			remoteName:  mt.Name, // server 侧的原始名字，tools/call 用
 			description: mt.Description,
 			schema:      inputSchemaToMap(mt.InputSchema),
 			client:      c.mcp,
 		})
 	}
 	return tools, nil
+}
+
+// namespaceSegment 把 server 名清洗成命名空间安全的片段：非字母数字下划线
+// 一律替换为 _，空名兜底为 server。
+func namespaceSegment(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, name)
+	if name == "" {
+		return "server"
+	}
+	return name
 }
 
 // Tools 返回该 server 暴露的所有工具（Connect 时已拉取）。
@@ -158,13 +178,14 @@ func (c *Client) Close() error {
 // Go 接口是结构化的：本包不 import agent 包，只要方法签名匹配即可被
 // agent 的 Tool 接口（Name/Description/Schema/Call）接受。
 type Tool struct {
-	name        string         // 工具名称
+	name        string         // 对模型暴露的命名空间化名称：mcp__<server>__<tool>
+	remoteName  string         // server 侧的原始工具名，tools/call 的参数
 	description string         // 工具说明，模型据此决定是否调用
 	schema      map[string]any // 参数 JSON Schema（tools/list 的 inputSchema 原样保留）
 	client      *client.Client // 所属 MCP 客户端，用于 tools/call
 }
 
-// Name 返回工具名称。
+// Name 返回对模型暴露的命名空间化工具名（mcp__<server>__<tool>）。
 func (t *Tool) Name() string { return t.name }
 
 // Description 返回工具说明。
@@ -179,7 +200,7 @@ func (t *Tool) Schema() map[string]any { return t.schema }
 // 的响应通道，天然支持并发调用，故此处无需额外加锁。
 func (t *Tool) Call(ctx context.Context, args map[string]any) (string, error) {
 	result, err := t.client.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{Name: t.name, Arguments: args},
+		Params: mcp.CallToolParams{Name: t.remoteName, Arguments: args},
 	})
 	if err != nil {
 		return "", fmt.Errorf("mcp 工具 %s: 调用失败: %w", t.name, err)

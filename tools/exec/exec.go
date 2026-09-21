@@ -26,7 +26,7 @@ func NewExecTool(workingDir string) *ExecTool {
 	return &ExecTool{workingDir: workingDir}
 }
 
-func (t *ExecTool) Name() string { return "exec_command" }
+func (t *ExecTool) Name() string { return ToolName }
 
 func (t *ExecTool) Description() string {
 	return "执行 shell 命令并返回输出"
