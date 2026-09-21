@@ -117,7 +117,7 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 | Skill 系统 | `SKILL.md` 发现与加载；`allowed-tools`（工具白名单，双重生效）、`model`、`temperature` 元数据均生效 |
 | `agent.SessionStore` | 会话持久化抽象，内置内存与 JSON 文件实现；接入 SQLite/Redis 只需实现 3 个方法 |
 | `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
-| `tools/exec` | 内置 shell 工具（exec_command）：超时与输出截断防护；`exec.Register(registry, perms, workdir)` 一站式注册并接线权限命令匹配器 |
+| `tools/exec` | 内置 shell 工具（exec_command）：超时与输出截断防护；自描述权限匹配器（`PermissionMatcherProvider`），`registry.Add` 后带参数模式的权限规则即按 shell 语义生效 |
 | `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
 
 ## 配置文件（仅参考 CLI 使用）

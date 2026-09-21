@@ -114,12 +114,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP
+	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP。
+	// 权限检查器先构建，随 Options.Permissions 注入；Agent 创建时会自动
+	// 收集工具自声明的权限匹配器（如 exec_command 的命令匹配器）。
 	registry := agent.NewRegistry()
-	// 权限检查器先于工具注册构建：exec.Register 会把命令匹配器接线进来。
 	perms := buildPermissions(cfg)
 	if cfg.Tools != nil {
-		registerBuiltinTools(registry, cfg.Tools, perms)
+		registerBuiltinTools(registry, cfg.Tools)
 	}
 	if len(cfg.Knowledge) > 0 {
 		kb := knowledge.NewKB(cfg.Knowledge)
@@ -299,7 +300,7 @@ func main() {
 
 // buildPermissions 从配置构造权限检查器：配置里的执行模式与 allow/deny
 // 规则 + 终端确认 UI。带参数模式的规则（如 exec_command:git status*）能按
-// shell 命令语义匹配，靠的是 exec.Register 接线的命令匹配器。
+// shell 命令语义匹配，靠的是 agent.New 自动收集的 ExecTool 自声明匹配器。
 func buildPermissions(cfg *config.Config) *agent.Checker {
 	pcfg := agent.PermissionConfig{}
 	if cfg.Permissions != nil {
@@ -320,14 +321,13 @@ func buildPermissions(cfg *config.Config) *agent.Checker {
 }
 
 // registerBuiltinTools 按配置注册内置工具（exec / filesystem / memory）。
-func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig, perms *agent.Checker) {
+func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
 	if cfg.Exec != nil && cfg.Exec.Enabled {
 		workdir := cfg.Exec.Workdir
 		if workdir == "" {
 			workdir = "."
 		}
-		// 一站式注册：工具 + 权限命令匹配器一次接线
-		if err := exec.Register(registry, perms, workdir); err != nil {
+		if err := registry.Add(exec.NewExecTool(workdir)); err != nil {
 			fmt.Fprintln(os.Stderr, "警告:", err)
 		} else {
 			fmt.Printf("已启用内置工具: exec_command（工作目录 %s，受 permissions 权限控制）\n", workdir)

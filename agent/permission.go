@@ -91,6 +91,27 @@ type PermissionConfig struct {
 // Checker 后，带参数模式的规则才对该工具生效。
 type ArgMatcher func(pattern string, args map[string]any) bool
 
+// PermissionMatcherProvider 是工具的可选自描述接口（与 OverviewProvider 同类）：
+// 声明本工具如何解释权限规则里的参数模式。实现了该接口的工具经 Registry.Add
+// 注册后，Agent 创建时自动把匹配器接线进支持 MatcherRegistrar 的 Checker——
+// 调用方只需 registry.Add(tool)，无需手工接线。
+//
+// 两个返回值语义刻意不同：allow 用于放行规则（实现应从严，确定命中才返回
+// true），deny 用于拒绝规则（实现应从宽，可疑即命中）；任一可为 nil，
+// deny 为 nil 时该语义退回 allow 匹配器。
+type PermissionMatcherProvider interface {
+	PermissionMatchers() (allow ArgMatcher, deny ArgMatcher)
+}
+
+// MatcherRegistrar 是 PermissionChecker 的可选扩展：能接收工具自声明的
+// 参数匹配器。Agent 创建时会扫描 Registry，把实现了
+// PermissionMatcherProvider 的工具接线进支持该接口的 Checker（内置
+// Checker 已实现）。手工调用 RegisterMatcher / RegisterDenyMatcher
+// 的注册优先于工具自声明（后者先发生，可被覆盖）。
+type MatcherRegistrar interface {
+	RegisterToolMatcher(tool string, allow, deny ArgMatcher)
+}
+
 // toolRule 是解析后的规则。
 type toolRule struct {
 	tool     string // 工具名；尾缀 * 已剥离
@@ -199,6 +220,20 @@ func (c *Checker) RegisterDenyMatcher(tool string, m ArgMatcher) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.denyM[tool] = m
+}
+
+// RegisterToolMatcher 实现 MatcherRegistrar：一次性接收工具自声明的
+// allow / deny 匹配器（Agent 创建时从实现了 PermissionMatcherProvider 的
+// 工具自动收集）。nil 的语义位跳过；重复注册覆盖旧值。
+func (c *Checker) RegisterToolMatcher(tool string, allow, deny ArgMatcher) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if allow != nil {
+		c.matchers[tool] = allow
+	}
+	if deny != nil {
+		c.denyM[tool] = deny
+	}
 }
 
 // Mode 返回当前执行模式。

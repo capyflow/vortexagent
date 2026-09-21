@@ -84,6 +84,7 @@ func New(opts Options) *Agent {
 	if sysPrompt == "" {
 		sysPrompt = DefaultSystemPrompt
 	}
+	collectPermissionMatchers(opts.Registry, opts.Permissions)
 	return &Agent{
 		provider:       opts.Provider,
 		registry:       opts.Registry,
@@ -100,6 +101,30 @@ func New(opts Options) *Agent {
 		skillManager:   opts.SkillManager,
 		maxRetries:     opts.MaxRetries,
 		perms:          opts.Permissions,
+	}
+}
+
+// collectPermissionMatchers 扫描 Registry，把实现了 PermissionMatcherProvider
+// 的工具自声明的参数匹配器接线进支持 MatcherRegistrar 的 Checker——
+// 调用方只需 registry.Add(tool)，权限规则的参数模式即可生效，无需手工接线。
+// 手工调用 RegisterMatcher / RegisterDenyMatcher 发生在此之后，可覆盖自声明。
+func collectPermissionMatchers(registry *Registry, perms PermissionChecker) {
+	if registry == nil || perms == nil {
+		return
+	}
+	registrar, ok := perms.(MatcherRegistrar)
+	if !ok {
+		return // 自定义 Checker 不支持收集时静默跳过
+	}
+	for _, name := range registry.Names() {
+		t, ok := registry.Get(name)
+		if !ok {
+			continue
+		}
+		if p, ok := t.(PermissionMatcherProvider); ok {
+			allow, deny := p.PermissionMatchers()
+			registrar.RegisterToolMatcher(name, allow, deny)
+		}
 	}
 }
 

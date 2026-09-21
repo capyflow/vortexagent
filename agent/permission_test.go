@@ -292,3 +292,70 @@ func TestAsk_PermissionAllowsTool(t *testing.T) {
 		t.Errorf("放行的工具应执行 1 次, 实际 %d 次", echo.calls)
 	}
 }
+
+// patternTool 是实现了权限自描述接口（PermissionMatcherProvider）的测试工具。
+type patternTool struct{ allow ArgMatcher }
+
+func (t *patternTool) Name() string        { return "pattern_tool" }
+func (t *patternTool) Description() string { return "测试权限自描述" }
+func (t *patternTool) Schema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *patternTool) Call(_ context.Context, _ map[string]any) (string, error) {
+	return "ok", nil
+}
+func (t *patternTool) PermissionMatchers() (ArgMatcher, ArgMatcher) { return t.allow, nil }
+
+// TestNew_CollectsToolMatchers 验证 agent.New 自动收集工具自声明的权限匹配器：
+// 注册工具后无需手工接线，带参数模式的规则即按工具语义生效。
+func TestNew_CollectsToolMatchers(t *testing.T) {
+	reg := NewRegistry()
+	matcher := func(pattern string, args map[string]any) bool {
+		cmd, _ := args["command"].(string)
+		return cmd == pattern || strings.HasPrefix(cmd, pattern+" ")
+	}
+	if err := reg.Add(&patternTool{allow: matcher}); err != nil {
+		t.Fatal(err)
+	}
+	checker, err := NewChecker(PermissionConfig{
+		Mode:  ModeWhitelist,
+		Allow: []string{"pattern_tool:git status"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = New(Options{Registry: reg, Permissions: checker})
+
+	ctx := context.Background()
+	if v, _ := checker.Check(ctx, CallInfo{Tool: "pattern_tool", Args: map[string]any{"command": "git status --short"}}); v != VerdictAllow {
+		t.Error("自声明匹配器应已接线：git status --short 应命中 allow 规则")
+	}
+	if v, _ := checker.Check(ctx, CallInfo{Tool: "pattern_tool", Args: map[string]any{"command": "rm -rf /"}}); v != VerdictDeny {
+		t.Error("未命中规则的调用应拒绝（whitelist 模式）")
+	}
+
+	// 手工注册优先于自声明（覆盖语义）
+	checker.RegisterMatcher("pattern_tool", exactArgsMatcher)
+	if v, _ := checker.Check(ctx, CallInfo{Tool: "pattern_tool", Args: map[string]any{"command": "git status --short"}}); v != VerdictDeny {
+		t.Error("手工注册的匹配器应覆盖工具自声明（全等语义不命中带参命令）")
+	}
+}
+
+// TestNew_CollectWithoutRegistrar 验证 Permissions 为 nil 或不支持收集的
+// 自定义 Checker 时，收集过程静默跳过、不 panic。
+func TestNew_CollectWithoutRegistrar(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Add(&patternTool{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = New(Options{Registry: reg})
+	_ = New(Options{Registry: reg, Permissions: customCheckerFunc(
+		func(context.Context, CallInfo) (Verdict, string) { return VerdictAllow, "" })})
+}
+
+type customCheckerFunc func(ctx context.Context, info CallInfo) (Verdict, string)
+
+func (f customCheckerFunc) Check(ctx context.Context, info CallInfo) (Verdict, string) {
+	return f(ctx, info)
+}

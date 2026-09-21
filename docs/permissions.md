@@ -2,7 +2,7 @@
 
 > 这份文档描述 vortex 的全局工具权限层：它做什么、怎么配置（CLI 用户）、
 > 怎么以库方式接入（下游开发者）、以及三个扩展点（自定义匹配器 / 确认 UI / 检查器）。
-> 实现代码集中在 `agent/permission.go`、`tools/exec/matcher.go` 与 `tools/exec/register.go`。
+> 实现代码集中在 `agent/permission.go` 与 `tools/exec/matcher.go`。
 
 ---
 
@@ -154,8 +154,10 @@ allow 与 deny 的失败方向相反：放行错放是事故，拦截错拦只�
 
 ## 4. 库方式接入（下游 Go 代码）
 
-内置 shell 工具提供了一站式注册入口 `exec.Register`：一条语句把 `exec_command`
-注册进 Registry，并把命令匹配器接线进 Checker，带参数模式的权限规则立即生效。
+与其他工具完全一致的惯例：**构造工具 → `registry.Add` → 注入 `Options.Permissions`**。
+没有额外的接线步骤——exec_command 实现了 `agent.PermissionMatcherProvider`
+自描述接口，`agent.New` 会自动把命令匹配器收集进 Checker，
+带参数模式的权限规则随即按 shell 语义生效。
 
 ```go
 package main
@@ -176,9 +178,8 @@ func main() {
         panic(err) // 规则有错在启动时暴露，不带残缺策略运行
     }
 
-    // 2. 一站式注册 shell 工具：工具 + 权限命令匹配器一次接线
-    //    （workdir 为执行目录，空串表示当前目录）
-    if err := exec.Register(registry, perms, "."); err != nil {
+    // 2. 像注册其他工具一样注册（工具自声明了权限匹配器，无需手工接线）
+    if err := registry.Add(exec.NewExecTool(".")); err != nil { // workdir 空串=当前目录
         panic(err)
     }
 
@@ -194,6 +195,7 @@ func main() {
 ```
 
 工具名常量 `exec.ToolName`（`"exec_command"`）可用于拼接规则字符串。
+注意：工具需在 `agent.New` 之前注册（收集发生在创建时），这也是框架的既有惯例。
 
 不设置 `Permissions` 时框架行为与从前完全一致（零成本兼容）；要更省事，
 也可以直接用 `config` 包加载与 CLI 同源的 JSON 配置，
@@ -203,9 +205,22 @@ func main() {
 
 ## 5. 扩展点
 
-### 5.1 为工具注册参数匹配器（ArgMatcher）
+### 5.1 为工具接入参数匹配器（ArgMatcher）
 
-你的自定义工具想支持 `工具名:参数模式` 规则，实现一个函数并注册即可：
+自定义工具想支持 `工具名:参数模式` 规则，有两种方式：
+
+**方式一（推荐）：实现自描述接口**，与内置工具完全一致，`registry.Add` 即完成接线：
+
+```go
+// 实现 agent.PermissionMatcherProvider（与 Overview() 渐进式披露同类的可选接口）
+func (t *SendEmailTool) PermissionMatchers() (agent.ArgMatcher, agent.ArgMatcher) {
+    return t.matchRecipient, nil // deny 位返回 nil 时退回 allow 匹配器
+}
+
+var _ agent.PermissionMatcherProvider = (*SendEmailTool)(nil) // 编译期断言
+```
+
+**方式二：手工注册**（动态匹配逻辑、或工具在框架外实现时）：
 
 ```go
 // 签名：模式 + 本次调用参数 → 是否命中
@@ -221,6 +236,7 @@ checker.RegisterMatcher("send_email", func(pattern string, args map[string]any) 
 - `RegisterMatcher`：**allow 语义**，实现应当从严（确定命中才返回 true）。
 - `RegisterDenyMatcher`：**deny 语义**专用，实现应当从宽（可疑即命中）。
   未注册时 deny 规则退回 `RegisterMatcher` 的实现。
+- 手工注册优先于工具自声明（自动收集发生在 `agent.New`，之后的手工调用覆盖它）。
 
 ### 5.2 自定义确认 UI（ApprovalUI）
 
@@ -271,5 +287,6 @@ type PermissionChecker interface {
 
 | 文件 | 覆盖 |
 |------|------|
-| `agent/permission_test.go` | 规则解析与报错、命名空间/通配匹配、优先级矩阵、full_access 下 deny 仍拦截、nil UI 降级、Remember 生效、端到端拒绝/放行路径 |
+| `agent/permission_test.go` | 规则解析与报错、命名空间/通配匹配、优先级矩阵、full_access 下 deny 仍拦截、nil UI 降级、Remember 生效、工具自声明匹配器自动收集与手工覆盖、端到端拒绝/放行路径 |
 | `tools/exec/matcher_test.go` | 命令拆分（引号/管道/后台符）、allow 前缀词边界、deny 词边界扫描与误伤用例 |
+| `tools/exec/provider_test.go` | registry.Add 后权限匹配器自动接线（端到端） |
