@@ -25,13 +25,14 @@ var DefaultPath string
 
 // Config 是 vortex 的顶层配置。
 type Config struct {
-	Provider     ProviderConfig    `json:"provider"`
-	Knowledge    []string          `json:"knowledge,omitempty"`
-	MCPServers   []MCPServerConfig `json:"mcpServers,omitempty"`
-	SystemPrompt string            `json:"systemPrompt,omitempty"`
-	Session      SessionConfig     `json:"session"`
-	Tools        *ToolsConfig      `json:"tools,omitempty"`
-	Autonomous   *AutonomousConfig `json:"autonomous,omitempty"`
+	Provider     ProviderConfig     `json:"provider"`
+	Knowledge    []string           `json:"knowledge,omitempty"`
+	MCPServers   []MCPServerConfig  `json:"mcpServers,omitempty"`
+	SystemPrompt string             `json:"systemPrompt,omitempty"`
+	Session      SessionConfig      `json:"session"`
+	Tools        *ToolsConfig       `json:"tools,omitempty"`
+	Permissions  *PermissionsConfig `json:"permissions,omitempty"`
+	Autonomous   *AutonomousConfig  `json:"autonomous,omitempty"`
 }
 
 // ProviderConfig LLM 提供方配置。
@@ -49,7 +50,7 @@ type ProviderConfig struct {
 // ToolsConfig 内置工具开关（默认全关：内置工具涉及本机执行，按需启用）。
 type ToolsConfig struct {
 	// Exec 启用 exec_command 工具（执行 shell 命令）。风险较高，
-	// 建议配合 Hooks.OnBeforeToolCall 做命令白名单。
+	// 建议配合 permissions 的 allow/deny 规则限制可执行的命令。
 	Exec *ExecToolConfig `json:"exec,omitempty"`
 
 	// Filesystem 启用 read_file / write_file / edit_file / list_files 工具，
@@ -60,6 +61,28 @@ type ToolsConfig struct {
 	// memory_get / memory_search / memory_list）。记忆是 agent 运行中自己写入、
 	// 跨会话持久化的事实条目，与单会话的历史（session）相互独立。
 	Memory *MemoryToolConfig `json:"memory,omitempty"`
+}
+
+// PermissionsConfig 全局工具权限配置：作用于所有工具（内置工具与 MCP 工具），
+// 在每次工具执行前判定。deny 规则在任何模式（含 full_access）下都生效。
+//
+// 规则格式："工具名" 或 "工具名:参数模式"（按第一个冒号切分），支持尾缀 *
+// 通配。MCP 工具名带命名空间：mcp__<server> 整个 server、mcp__<server>__<tool>
+// 单个工具。参数模式由工具域解释，exec_command 的模式按 shell 命令理解：
+//
+//	allow: ["read_file", "exec_command:git status*"]
+//	deny:  ["exec_command:rm -rf*", "exec_command:mkfs*"]
+type PermissionsConfig struct {
+	// Mode 执行模式：full_access（全放行，deny 仍拦截）/
+	// confirm（默认，放行规则未命中的调用询问用户）/ whitelist（仅执行
+	// allow 规则命中的调用）
+	Mode string `json:"mode,omitempty"`
+
+	// Allow 放行规则：命中的调用直接放行，不再询问
+	Allow []string `json:"allow,omitempty"`
+
+	// Deny 拒绝规则：命中的调用直接拒绝，任何模式下都生效
+	Deny []string `json:"deny,omitempty"`
 }
 
 // ExecToolConfig exec 工具配置。

@@ -9,6 +9,7 @@
 //	tool.go    工具接口（Tool）与注册表（Registry）
 //	session.go 会话（Session）：对话历史与回滚
 //	hooks.go   生命周期钩子（Hooks）：观察与拦截扩展点
+//	permission.go 全局工具权限：执行模式 + allow/deny 规则 + 交互确认
 //	store.go   会话存储（SessionStore）：持久化抽象与内置实现
 //	skill.go   Skill 系统：技能发现、加载与管理
 package agent
@@ -33,6 +34,11 @@ type Options struct {
 	ParallelTools  bool
 	SkillManager   *SkillManager
 	MaxRetries     int
+
+	// Permissions 全局工具权限检查：每次工具执行前调用，非 VerdictAllow
+	// 的调用被拒绝（错误文本回传模型且不重试）。nil 表示不做权限控制。
+	// 见 permission.go 的 Checker（执行模式 + allow/deny 规则 + 交互确认）。
+	Permissions PermissionChecker
 }
 
 // DefaultSystemPrompt 默认系统提示词。
@@ -65,6 +71,7 @@ type Agent struct {
 	parallelTools  bool
 	skillManager   *SkillManager
 	maxRetries     int
+	perms          PermissionChecker
 }
 
 // New 创建 Agent。
@@ -77,6 +84,7 @@ func New(opts Options) *Agent {
 	if sysPrompt == "" {
 		sysPrompt = DefaultSystemPrompt
 	}
+	collectPermissionMatchers(opts.Registry, opts.Permissions)
 	return &Agent{
 		provider:       opts.Provider,
 		registry:       opts.Registry,
@@ -92,6 +100,31 @@ func New(opts Options) *Agent {
 		parallelTools:  opts.ParallelTools,
 		skillManager:   opts.SkillManager,
 		maxRetries:     opts.MaxRetries,
+		perms:          opts.Permissions,
+	}
+}
+
+// collectPermissionMatchers 扫描 Registry，把实现了 PermissionMatcherProvider
+// 的工具自声明的参数匹配器接线进支持 MatcherRegistrar 的 Checker——
+// 调用方只需 registry.Add(tool)，权限规则的参数模式即可生效，无需手工接线。
+// 手工调用 RegisterMatcher / RegisterDenyMatcher 发生在此之后，可覆盖自声明。
+func collectPermissionMatchers(registry *Registry, perms PermissionChecker) {
+	if registry == nil || perms == nil {
+		return
+	}
+	registrar, ok := perms.(MatcherRegistrar)
+	if !ok {
+		return // 自定义 Checker 不支持收集时静默跳过
+	}
+	for _, name := range registry.Names() {
+		t, ok := registry.Get(name)
+		if !ok {
+			continue
+		}
+		if p, ok := t.(PermissionMatcherProvider); ok {
+			allow, deny := p.PermissionMatchers()
+			registrar.RegisterToolMatcher(name, allow, deny)
+		}
 	}
 }
 

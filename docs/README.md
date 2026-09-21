@@ -8,6 +8,7 @@
 | [tutorial.md](tutorial.md) | **初学者**（没写过 agent） | 从零动手：10 节课搭起自己的 agent，每课可运行、可练习 |
 | [architecture.md](architecture.md) | 想理解设计原理的人 | 框架分层（核心 / 扩展 / 应用）、每个包的职责、关键设计决策与踩坑记录 |
 | [autonomous-agent.md](autonomous-agent.md) | 想使用/集成自治 agent 的人 | 自治 agent 的运行机制（主循环、调度、事件、持久化）与配置/对话/编程三种使用方式 |
+| [permissions.md](permissions.md) | 想控制工具执行风险的人 | 全局工具权限：执行模式、allow/deny 规则、交互确认，以及接入与自定义扩展点 |
 | [guide.md](guide.md) | 开发者 | 开发指南与 API 参考 |
 | [../README.md](../README.md) | 所有使用者 | 快速开始、配置参考、扩展指南、测试策略 |
 
@@ -20,7 +21,7 @@
 llm/              统一 LLM 协议 + 多厂商适配器（openai / anthropic / gemini）
 agent/            Agent 运行时：循环（ask.go）、工具（tool.go）、子 agent（subagent.go）、
                   异步任务（taskhub.go）、钩子（hooks.go）、Skill（skill.go）、
-                  会话与存储（sessionstore/）
+                  权限（permission.go，见 docs/permissions.md）、会话与存储（sessionstore/）
 autonomous/       自治 agent：目标管理、精确唤醒调度、事件驱动执行
                   （见 docs/autonomous-agent.md）
 tools/mcp/        MCP 客户端：接入任意语言编写的自定义工具

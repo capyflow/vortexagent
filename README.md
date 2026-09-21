@@ -110,12 +110,14 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 | `agent.New` + `Ask` | 核心循环：多轮工具调度、失败自动回滚历史、空回答防护 |
 | `agent.Tool` + `Registry` | 结构化接口，实现 4 个方法即成为工具；重名保护、确定性工具声明排序 |
 | `agent.Hooks` | 生命周期钩子：`OnMessage` / `OnLLMCall`（含 token 消耗与耗时）/ `OnBeforeToolCall`（可拦截）/ `OnAfterToolCall` / `OnError` / `OnFinish` |
+| `agent.Checker` | 全局工具权限：执行模式（full_access / confirm / whitelist）+ allow/deny 规则 + 交互确认 UI；所有工具（含 MCP）在 Ask 循环统一拦截，deny 在任何模式下都生效 |
 | `agent.NewSubagentTool` | 子 agent 原语：把派生好的 Agent 包装成工具，父 agent 委派任务、只回收最终答复，多 agent 编排的基础 |
 | `agent.TaskHub` | 异步任务编排：`task_start` 分发后台任务（goroutine + channel 并发）、主 agent 继续自己的工作，`task_status` / `task_wait` / `task_cancel` 管理任务 |
 | `agent.WithJSONMode` | 结构化输出：要求本次回答只输出合法 JSON（OpenAI/Gemini 原生映射，Anthropic 系统提示约束） |
 | Skill 系统 | `SKILL.md` 发现与加载；`allowed-tools`（工具白名单，双重生效）、`model`、`temperature` 元数据均生效 |
 | `agent.SessionStore` | 会话持久化抽象，内置内存与 JSON 文件实现；接入 SQLite/Redis 只需实现 3 个方法 |
 | `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
+| `tools/exec` | 内置 shell 工具（exec_command）：超时与输出截断防护；自描述权限匹配器（`PermissionMatcherProvider`），`registry.Add` 后带参数模式的权限规则即按 shell 语义生效 |
 | `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
 
 ## 配置文件（仅参考 CLI 使用）
@@ -157,6 +159,7 @@ go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultGroup=my-age
 | `provider.thinking` | 是否启用思考模式（如 DeepSeek R1 / Claude） |
 | `knowledge` | 知识库根目录列表（可选，注册 search/read 工具） |
 | `tools` | 内置工具开关（可选）：`tools.exec` 启用 shell 执行、`tools.filesystem` 启用文件读写（路径限制在 root 内）、`tools.memory` 启用长期记忆，默认全关 |
+| `permissions` | 全局工具权限（可选）：执行模式 + allow/deny 规则，见下文「工具权限与确认」 |
 | `mcpServers` | MCP server 列表，启动时自动连接并注册全部工具（可选） |
 | `systemPrompt` | 自定义系统提示词 |
 | `session` | 会话持久化（可选）：`session.type` 为 `memory`（默认）/ `json` / `postgres`，`session.file` 为 JSON 存储路径，启用后重启可继续上次对话 |
@@ -175,6 +178,39 @@ vortex -group agent-b -addr :8082
 也可以给每个 agent 单独构建一个烧录了 group 名的二进制（见上）。仅当需要**有意共享**
 某类数据（如多个 agent 共用一份记忆）时，才在配置文件里写显式路径。`vortex-serve`
 多实例注意端口错开；`.env` 按进程工作目录加载，不同 agent 建议各用独立的工作目录。
+
+## 工具权限与确认
+
+所有工具（内置与 MCP）在每次执行前经过全局权限检查（`agent.Checker`，在 Ask 循环的
+工具分发点统一拦截），按执行模式决定"没命中规则时问不问"：
+
+| 模式 | 行为 |
+|------|------|
+| `full_access` | 全部放行，不询问（deny 规则仍然拦截） |
+| `confirm`（默认） | 放行规则未命中的调用询问用户：y 允许 / n 拒绝 / a 本会话总是允许 |
+| `whitelist` | 仅 allow 规则命中的调用可执行，其余直接拒绝 |
+
+```json
+"permissions": {
+  "mode": "confirm",
+  "allow": ["read_file", "list_files", "exec_command:git status*", "mcp__github"],
+  "deny": ["exec_command:rm -rf*", "exec_command:mkfs*"]
+}
+```
+
+- **规则格式**：`工具名` 或 `工具名:参数模式`（按第一个冒号切分），工具名支持尾缀 `*` 通配。
+  MCP 工具名带命名空间：`mcp__<server>` 覆盖整个 server，`mcp__<server>__<tool>` 单个工具
+- **exec_command 的参数模式按 shell 命令理解**，宽严刻意不同：allow 从严——复合命令
+  （`;` `&&` `||` `|`）要求每一段都命中，`git status*` 放行不了 `git status; rm -rf /`；
+  deny 从宽——对整条命令做词边界扫描，藏在命令替换里的 `echo $(rm -rf /)` 也拦得住，
+  而无关词（如 `format` 之于 `rm`）不误伤
+- **优先级**：本会话记住的允许 > deny > allow > 模式；deny 在任何模式（含 full_access）下生效
+- REPL 里 `/mode` 查看/切换执行模式、`/permissions` 查看规则
+- 无交互环境（vortex-serve）中 confirm 的问询自动降级为拒绝；需要自动执行的调用请配置
+  allow 规则、whitelist 模式或 full_access
+- 这是字符串级过滤，防模型误用；防不了蓄意构造的绕过，高危环境请配合操作系统级沙箱
+
+完整的功能描述与接入指南（库方式接入、自定义匹配器/确认 UI/检查器）见 [docs/permissions.md](docs/permissions.md)。
 
 ## 用框架构建你自己的 agent
 

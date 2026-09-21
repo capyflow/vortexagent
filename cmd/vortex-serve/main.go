@@ -90,6 +90,21 @@ func main() {
 		fmt.Printf("已加载知识库: %s\n", strings.Join(cfg.Knowledge, ", "))
 	}
 
+	// 权限检查器：服务端无交互界面，confirm 模式下未放行的调用自动拒绝——
+	// 需要工具自动执行时，配置 allow 规则、whitelist 模式或 full_access。
+	pcfg := agent.PermissionConfig{}
+	if cfg.Permissions != nil {
+		pcfg.Mode = agent.Mode(cfg.Permissions.Mode)
+		pcfg.Allow = cfg.Permissions.Allow
+		pcfg.Deny = cfg.Permissions.Deny
+	}
+	perms, err := agent.NewChecker(pcfg, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: 权限配置无效:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("权限: 执行模式 %s（无交互环境，confirm 模式下未放行的调用将被拒绝）\n", perms.Mode())
+
 	// 会话持久化（可选）：配置 session.type=json 后，会话跨重启保留
 	var store sessionstore.Store
 	if cfg.Session.Type == "json" {
@@ -114,6 +129,7 @@ func main() {
 		MaxTokens:    cfg.Provider.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
 		MaxRetries:   3,
+		Permissions:  perms,
 	})
 
 	var autoAgent *autonomous.AutonomousAgent

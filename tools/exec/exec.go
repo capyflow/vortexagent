@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/capyflow/vortexagent/agent"
 )
 
 const (
@@ -18,6 +20,10 @@ const (
 	MaxOutputSize = 100 * 1024 // 100KB
 )
 
+// ToolName 是本工具在 Registry 中的名字，权限规则用工具名引用它
+// （如 "exec_command:git status*"、"exec_command:rm -rf*"）。
+const ToolName = "exec_command"
+
 type ExecTool struct {
 	workingDir string
 }
@@ -26,7 +32,18 @@ func NewExecTool(workingDir string) *ExecTool {
 	return &ExecTool{workingDir: workingDir}
 }
 
-func (t *ExecTool) Name() string { return "exec_command" }
+func (t *ExecTool) Name() string { return ToolName }
+
+// PermissionMatchers 实现 agent.PermissionMatcherProvider 可选接口（与
+// OverviewProvider 同类的自描述扩展点）：声明本工具如何解释权限规则里的
+// 参数模式。Agent 创建时自动把匹配器接线进 Checker，调用方只需
+// registry.Add(NewExecTool(...))，带参数模式的规则即可按 shell 语义生效。
+func (t *ExecTool) PermissionMatchers() (agent.ArgMatcher, agent.ArgMatcher) {
+	return CommandMatcher, CommandDenyMatcher
+}
+
+// 编译期断言：ExecTool 满足权限自描述接口。
+var _ agent.PermissionMatcherProvider = (*ExecTool)(nil)
 
 func (t *ExecTool) Description() string {
 	return "执行 shell 命令并返回输出"
