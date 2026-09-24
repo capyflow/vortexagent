@@ -92,7 +92,7 @@ agent/             Agent runtime
   session.go       Conversation message history
   hooks.go         Lifecycle hooks (logging / telemetry / interception)
   store.go         Session storage abstraction (in-memory / JSON file implementations)
-autonomous/        Autonomous agent: goal storage & scheduling (cron / interval / one-shot); runs alongside vortex-serve
+autonomous/        Autonomous agent: goal storage & scheduling (cron / interval / one-shot / event), pluggable executors, pause/resume; runs alongside vortex-serve
 config/            Config file schema & loading (agent group data isolation under ~/.vortex/<group>/)
 ├──────────────────── Built-in extensions (optional; register as needed) ────────────────────
 tools/mcp/         MCP client: connect to MCP servers written in any language

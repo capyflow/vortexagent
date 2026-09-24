@@ -510,10 +510,13 @@ func TestAutonomousAgent_BatchUpdatesState(t *testing.T) {
 		MaxSleep:  time.Hour,
 	})
 
-	// 白盒：不经 Run()，直接初始化 scheduler 与 session 后触发批量路径
+	// 白盒：不经 Run()，直接初始化 scheduler 并注入自治会话后触发多目标执行路径
 	autoAgent.mu.Lock()
 	autoAgent.scheduler = NewScheduler(time.Hour)
 	autoAgent.session = sessionstore.NewSession("fake-model")
+	if s, ok := autoAgent.executor.(sessionSetter); ok {
+		s.setSession(autoAgent.session)
+	}
 	autoAgent.mu.Unlock()
 
 	past := time.Now().Add(-1 * time.Second)

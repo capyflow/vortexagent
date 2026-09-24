@@ -24,28 +24,40 @@ Goal 是自治 agent 的基本工作单元，一个 Goal 描述"要做什么、�
 | `NextRunAt` | 下次执行时间（调度器计算并维护） |
 | `RunCount` / `FailCount` | 累计执行次数 / 连续失败次数 |
 | `LastRunAt` / `LastResult` / `LastReflect` | 上次执行时间、结果摘要、反思结论 |
+| `Meta` | 业务自定义元数据（`map[string]string`，如 `agent`/`channel` 标记），随目标持久化，快照深拷贝 |
 
 **状态机**：
 
 ```
 pending ──┐
           ├──▶ active ──▶ done     （oneshot 执行完毕，或达到 MaxRuns）
-          │        ├──▶ failed   （连续失败 ≥ 3 次）
+          │   │    ├──▶ failed   （连续失败 ≥ MaxFailCount，默认 3）
+          │   │    └──▶ paused ──▶ active（PauseGoal / ResumeGoal，暂停不删除）
           └─────────┴──▶ canceled（预留状态，当前 remove_goal 直接删除目标）
 ```
 
-终态（`done` / `failed`）会持久化到存储，**重启后不会重新执行**。
+终态（`done` / `failed`）会持久化到存储，**重启后不会重新执行**；
+`paused` 不是终态，恢复后按计划继续。
+
+> 包外更新 Goal 的运行状态请使用 `RecordRun(result, err)` / `RecordReflect(s)` /
+> `SetMeta(k, v)` 等原子方法——直接裸写 `RunCount` 等字段会产生 data race。
 
 ### 1.2 Schedule（调度规则）
 
 | 类型 | 说明 | 关键参数 |
 |------|------|----------|
-| `oneshot` | 一次性：延迟后执行一次 | `Delay` |
-| `interval` | 周期性：固定间隔重复执行 | `Interval` |
+| `oneshot` | 一次性：延迟后执行一次 | `Delay`（相对）或 `At`（绝对时刻，优先于 `Delay`；跨重启不漂移，已过期的 `At` 会立即补跑一次） |
+| `interval` | 周期性：固定间隔重复执行 | `Interval`；`Anchored=true` 时按计划时刻推进（见下） |
 | `cron` | 定时：cron 表达式（robfig 标准格式） | `Cron`，如 `"0 8 * * *"` |
 | `event` | 事件驱动：只在收到匹配事件时执行 | `Event`（事件类型，如 `"github.push"`） |
 
 所有类型共用可选参数 `MaxRuns`（最大执行次数，0 = 不限）。
+
+**interval 的两种推进模式**：
+
+- 默认（非锚定）：以**实际执行时刻**为基准（`LastRunAt + Interval`），执行耗时会长间隔，逐次累积漂移；
+- 锚定（`Anchored: true`）：以**计划时刻**（`NextRunAt`）为基准推进，执行多慢都不漂移；
+  错过多个周期时追到最近一个未来槽位，**不补跑**。
 
 ---
 
@@ -79,14 +91,15 @@ pending ──┐
 
 1. **收集到期目标**：`Status` 为 active/pending 且 `NextRunAt` 已到，按 `Priority` 降序排列；
 2. **零 token 预检（preCheck）**，过滤掉：
-   - 已是终态（done / failed / canceled）的目标；
+   - 已是终态（done / failed / canceled）或 paused 的目标；
    - `RunCount ≥ MaxRuns` 的目标（标记 done）；
-   - 连续失败 ≥ 3 次的目标（标记 failed，防止无限烧 token）；
+   - 连续失败 ≥ `MaxFailCount` 次（默认 3）的目标（标记 failed，防止无限烧 token）；
    - event 型目标（它们不走时间调度）；
 3. **限制批量**：单次唤醒最多执行 `MaxBatchSize` 个（默认 3），剩余目标下次唤醒继续；
-4. **执行**：1 个目标走 `executeGoal`，多个目标合并为一次 prompt 走 `executeBatch`；
+4. **逐个执行**：每个目标独立经 `Executor` 执行（默认 LLMExecutor），
+   结果归属各自目标——`LastResult` / `FailCount` / 反思 / 回调互不串扰；
 5. **重排并落盘**：执行完毕后统一计算 `NextRunAt` 并持久化——
-   oneshot 标记 done，interval 以 `LastRunAt + Interval` 推进，cron 取下一个触发时刻。
+   oneshot 标记 done，interval 按锚定/非锚定模式推进，cron 取下一个触发时刻。
 
 > 执行后必须重排是正确性的关键：否则 `NextRunAt` 留在过去，下一次唤醒会立即重复执行，
 > 形成紧密循环（这正是 1.0 版本的实际 bug，已由回归测试覆盖）。
@@ -94,13 +107,35 @@ pending ──┐
 **单目标执行（executeGoal）**：
 
 ```
-构建上下文 prompt（当前时间 / 目标信息 / 上次结果 / 上次反思）
-  → agent.Ask()（自治专用 session，可调用所有已注册工具）
-  → 更新 RunCount / LastRunAt / LastResult / FailCount
+触发 OnGoalDue 回调（如配置）
+  → Executor.Execute(ctx, goal)（产出结果；默认构建自治 prompt 并走 agent.Ask）
+  → RecordRun：更新 RunCount / LastRunAt / LastResult / FailCount
   → 反思（见 2.3）
   → 持久化到 GoalStore
   → 触发 OnGoalExecute 回调（如配置）
 ```
+
+**可插拔执行器（Executor）**：执行方式不绑定 LLM。`Config.Executor` 为 nil 时使用默认
+`LLMExecutor`（经自治 session 走 `agent.Ask`）；业务方可注入自定义实现，例如零 token 的
+"到点直投文本"：
+
+```go
+type DirectExecutor struct{}
+
+func (e *DirectExecutor) Execute(ctx context.Context, g *autonomous.Goal) (string, error) {
+    return g.Description, nil // 普通提醒直投文本，零 token
+}
+
+auto := autonomous.New(autonomous.Config{ ..., Executor: &DirectExecutor{} })
+```
+
+框架负责唤醒、预检、状态推进、反思、持久化与回调；Executor 只需把目标变成结果。
+`LLMExecutor` 也可经 `NewLLMExecutor` 显式创建，作为自定义执行器的兜底复用。
+
+**观测钩子**：`Config` 支持四个回调——`OnGoalDue`（即将执行）、`OnGoalExecute`（执行完成）、
+`OnGoalSkipped`（预检跳过，附原因：`status_done` / `max_runs_reached` / `fail_limit_reached` /
+`event_driven` 等）、`OnGoalStatusChange`（状态变更，含 old/new）。回调由框架 goroutine 同步
+调用：不得阻塞（会推迟主循环），不得重入 `PauseGoal` / `ResumeGoal` 等加锁方法（会死锁）。
 
 ### 2.3 反思机制（Reflection）
 
@@ -141,7 +176,9 @@ vortex-serve 启动流程**，当前生产路径只有 Webhook 事件（代码�
 - 每次执行后（含预检标记的终态变更）都会落盘，重启后：
   - active 目标按 `NextRunAt` 继续调度（已过期则立即执行一次）；
   - done / failed 目标不会重新执行；
-- 失败退避：`Ask` 出错时 `FailCount++`（成功则清零），连续 3 次失败目标进入 failed 终态。
+  - paused 目标保持暂停，恢复后继续；
+- 失败退避：`Ask` 出错时 `FailCount++`（成功则清零），连续 `MaxFailCount` 次（默认 3）
+  失败目标进入 failed 终态。
 
 ### 2.6 并发模型
 
@@ -289,7 +326,12 @@ auto := autonomous.New(autonomous.Config{
     GoalStore: goalStore,
     MaxSleep:  30 * time.Minute, // 睡眠上限，默认 1h
     MaxBatchSize: 3,             // 单次唤醒最多执行的目标数，默认 3
+    // Executor: &myExecutor{},  // 自定义执行器，nil 时默认走 LLM
     // ReflectConfig: autonomous.ReflectConfig{Mode: autonomous.ReflectionDeep},
+    // OnGoalDue:          func(g *autonomous.Goal) { ... },                          // 即将执行
+    // OnGoalExecute:      func(g *autonomous.Goal, result string) { ... },           // 执行完成
+    // OnGoalSkipped:      func(g *autonomous.Goal, reason string) { ... },           // 预检跳过
+    // OnGoalStatusChange: func(g *autonomous.Goal, old, new autonomous.GoalStatus) { ... },
 })
 
 // 编程方式添加目标
@@ -298,9 +340,26 @@ g.Title = "每小时检查收件箱"
 g.Description = "检查新邮件并汇总"
 g.Status = autonomous.GoalStatusActive
 g.Schedule = autonomous.Schedule{Type: autonomous.ScheduleInterval, Interval: time.Hour}
+g.SetMeta("channel", "dm") // 业务自定义元数据，随目标持久化
 if err := auto.AddGoal(g); err != nil {
     log.Fatal(err)
 }
+
+// 绝对时刻的一次性提醒（跨重启不漂移）
+g2 := autonomous.NewGoal()
+g2.Title = "15:00 的评审会议提醒"
+g2.Status = autonomous.GoalStatusActive
+g2.Schedule = autonomous.Schedule{Type: autonomous.ScheduleOneShot, At: meetingTime}
+
+// 锚定 interval：按计划时刻推进，长执行不累积漂移
+g3 := autonomous.NewGoal()
+g3.Schedule = autonomous.Schedule{
+    Type: autonomous.ScheduleInterval, Interval: time.Hour, Anchored: true,
+}
+
+// 暂停 / 恢复（删除重建不再必要）
+_ = auto.PauseGoal(g.ID)
+_ = auto.ResumeGoal(g.ID)
 
 // 阻塞运行（ctx 取消后优雅退出）
 go func() {
@@ -335,7 +394,8 @@ for _, g := range auto.Goals() {
     "Schedule": { "Type": "cron", "Cron": "0 8 * * *", "MaxRuns": 0 },
     "RunCount": 3,
     "FailCount": 0,
-    "NextRunAt": "2026-09-02T08:00:00+08:00"
+    "NextRunAt": "2026-09-02T08:00:00+08:00",
+    "Meta": { "channel": "dm" }
   }
 }
 ```
@@ -350,14 +410,16 @@ for _, g := range auto.Goals() {
 自治 agent 天然适合长期运行，成本控制手段：
 
 1. **精确睡眠**：只睡到最近目标时刻，不轮询、不空耗；
-2. **零 token 预检**：终态 / 超限 / 连续失败的目标不产生任何 LLM 调用；
-3. **批量合并**：同批到期目标合并为一次 `Ask`（默认一批最多 3 个）；
-4. **失败熔断**：连续失败 3 次自动进入 failed 终态，避免对故障目标反复重试烧 token；
+2. **零 token 预检**：终态 / 暂停 / 超限 / 连续失败的目标不产生任何 LLM 调用；
+3. **可插拔执行器**：普通提醒类目标注入 `DirectExecutor` 直投文本，完全零 token；
+4. **失败熔断**：连续失败 `MaxFailCount` 次（默认 3）自动进入 failed 终态，
+   避免对故障目标反复重试烧 token；
 5. **轻量反思默认开启**：规则判断零 token，深度反思按需开启。
 
 ## 5. 已知限制
 
 - `FileWatcher`（文件监听）已实现但未接入启动流程，事件目前只有 Webhook 一种来源；
 - 配置文件不能声明 event 型目标（用对话 `add_goal` 创建）；
-- 深度反思、`MaxBatchSize`、自定义事件通道等高级配置仅暴露编程 API，未进配置文件；
-- 自治执行使用独立的内存 session，执行历史不持久化（目标执行结果在 `LastResult` 中保留一份摘要）。
+- 深度反思、`MaxBatchSize`、自定义执行器、观测钩子等高级配置仅暴露编程 API，未进配置文件；
+- 自治执行使用独立的内存 session，执行历史不持久化（目标执行结果在 `LastResult` 中保留一份摘要）；
+- `Executor.Execute` 由主循环同步调用，长阻塞的自定义执行器会推迟后续目标与下一次唤醒。

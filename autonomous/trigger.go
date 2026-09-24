@@ -17,12 +17,17 @@ type Trigger interface {
 
 // ─── 具体实现 ───
 
-// OneShotTrigger：一次性延迟执行。
+// OneShotTrigger：一次性执行，At（绝对时刻）优先于 Delay（相对延迟）。
+// At 非零时直接返回 At——即使已过期（错过的目标会立即到期补跑一次）。
 type OneShotTrigger struct {
 	Delay time.Duration
+	At    time.Time
 }
 
 func (t *OneShotTrigger) NextRun(now time.Time) (time.Time, error) {
+	if !t.At.IsZero() {
+		return t.At, nil
+	}
 	return now.Add(t.Delay), nil
 }
 
@@ -69,7 +74,7 @@ func (t *EventTrigger) Type() ScheduleType { return ScheduleEvent }
 func newTrigger(s Schedule) Trigger {
 	switch s.Type {
 	case ScheduleOneShot:
-		return &OneShotTrigger{Delay: s.Delay}
+		return &OneShotTrigger{Delay: s.Delay, At: s.At}
 	case ScheduleInterval:
 		return &IntervalTrigger{Interval: s.Interval}
 	case ScheduleCron:

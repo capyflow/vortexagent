@@ -85,7 +85,7 @@ agent/             Agent 运行时
   session.go       会话消息历史
   hooks.go         生命周期钩子（日志/遥测/权限拦截）
   store.go         会话存储抽象（内存 / JSON 文件实现）
-autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性），配合 vortex-serve 运行
+autonomous/        自治 agent：目标存储与调度（cron / 间隔 / 一次性 / 事件），执行器可插拔，支持暂停恢复，配合 vortex-serve 运行
 config/            配置文件 schema 与加载（agent group 数据隔离：~/.vortex/<group>/）
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具

@@ -39,11 +39,19 @@ type Config struct {
 	Registry      *agent.Registry     // 工具注册表（用于注册自治工具）
 	GoalStore     GoalStore           // 目标存储
 	MaxSleep      time.Duration       // 最大睡眠间隔（默认 1h）
-	MaxBatchSize  int                 // 单次批量执行目标上限（默认 3）
+	MaxBatchSize  int                 // 单次唤醒执行目标上限（默认 3）
+	MaxFailCount  int                 // 连续失败次数上限，超过即标记 failed（默认 3）
 	EventChan     chan Event          // 外部事件通道（可选，nil 时内部创建）
 	UserInputCh   chan string         // 用户输入通道（可选，nil 时内部创建）
 	ReflectConfig ReflectConfig       // 反思配置（可选，默认轻量模式）
-	OnGoalExecute func(*Goal, string) // 执行完成回调（可选）
+	Executor      Executor            // 目标执行器（可选，nil 时使用默认 LLMExecutor）
+	// 以下四个回调均在框架 goroutine 内同步调用：不得阻塞（会推迟主循环），
+	// 不得重入调用 AutonomousAgent 的加锁方法（如 PauseGoal/ResumeGoal，会死锁）；
+	// 需要读取目标列表时建议在回调内使用 goal.Snapshot() 或异步分发。
+	OnGoalExecute      func(*Goal, string)                 // 执行完成回调（可选）
+	OnGoalDue          func(*Goal)                         // 目标即将执行回调（预检通过后，可选）
+	OnGoalSkipped      func(*Goal, string)                 // 目标被预检跳过回调，第二个参数为原因（可选）
+	OnGoalStatusChange func(*Goal, GoalStatus, GoalStatus) // 状态变更回调（goal, old, new，可选）
 }
 
 // AutonomousAgent 是自治 agent 的主体。
@@ -58,14 +66,19 @@ type AutonomousAgent struct {
 	goalStore   GoalStore
 	scheduler   *Scheduler
 	session     *sessionstore.Session // 自治专用 session
+	executor    Executor              // 目标执行器（默认 LLMExecutor）
 	maxSleep    time.Duration
 	maxBatch    int
+	maxFail     int         // 连续失败次数上限
 	timer       *time.Timer // 可重置的睡眠计时器
 	eventCh     chan Event
 	userInputCh chan string
 	wakeReset   chan struct{}
 	reflectCfg  ReflectConfig
-	onExecute   func(*Goal, string)
+	onExecute      func(*Goal, string)
+	onDue          func(*Goal)
+	onSkipped      func(*Goal, string)
+	onStatusChange func(*Goal, GoalStatus, GoalStatus)
 }
 
 // New 创建 AutonomousAgent。
@@ -76,6 +89,9 @@ func New(cfg Config) *AutonomousAgent {
 	if cfg.MaxBatchSize <= 0 {
 		cfg.MaxBatchSize = 3
 	}
+	if cfg.MaxFailCount <= 0 {
+		cfg.MaxFailCount = 3
+	}
 	if cfg.EventChan == nil {
 		cfg.EventChan = make(chan Event)
 	}
@@ -83,19 +99,29 @@ func New(cfg Config) *AutonomousAgent {
 		cfg.UserInputCh = make(chan string)
 	}
 
+	executor := cfg.Executor
+	if executor == nil {
+		executor = NewLLMExecutor(cfg.Agent, cfg.Model)
+	}
+
 	a := &AutonomousAgent{
-		agent:       cfg.Agent,
-		model:       cfg.Model,
-		registry:    cfg.Registry,
-		goalStore:   cfg.GoalStore,
-		maxSleep:    cfg.MaxSleep,
-		maxBatch:    cfg.MaxBatchSize,
-		timer:       time.NewTimer(time.Hour),
-		eventCh:     cfg.EventChan,
-		userInputCh: cfg.UserInputCh,
-		wakeReset:   make(chan struct{}, 1),
-		reflectCfg:  cfg.ReflectConfig,
-		onExecute:   cfg.OnGoalExecute,
+		agent:          cfg.Agent,
+		model:          cfg.Model,
+		registry:       cfg.Registry,
+		goalStore:      cfg.GoalStore,
+		executor:       executor,
+		maxSleep:       cfg.MaxSleep,
+		maxBatch:       cfg.MaxBatchSize,
+		maxFail:        cfg.MaxFailCount,
+		timer:          time.NewTimer(time.Hour),
+		eventCh:        cfg.EventChan,
+		userInputCh:    cfg.UserInputCh,
+		wakeReset:      make(chan struct{}, 1),
+		reflectCfg:     cfg.ReflectConfig,
+		onExecute:      cfg.OnGoalExecute,
+		onDue:          cfg.OnGoalDue,
+		onSkipped:      cfg.OnGoalSkipped,
+		onStatusChange: cfg.OnGoalStatusChange,
 	}
 	a.timer.Stop() // 停止初始 timer，Run() 中再启动
 	return a
@@ -133,8 +159,11 @@ func (a *AutonomousAgent) Run(ctx context.Context) error {
 	a.scheduler.ReplaceAll(goals)
 	a.mu.Unlock()
 
-	// 4. 创建专用 session
+	// 4. 创建专用 session，并注入给需要会话的执行器（默认 LLMExecutor）
 	a.session = sessionstore.NewSession(a.model)
+	if s, ok := a.executor.(sessionSetter); ok {
+		s.setSession(a.session)
+	}
 
 	a.setupGoalTools()
 
@@ -247,6 +276,83 @@ func (a *AutonomousAgent) RemoveGoal(id string) error {
 	return nil
 }
 
+// PauseGoal 暂停目标：不再调度执行，但不删除，可随时 ResumeGoal 恢复。
+// 已是终态（done/failed/canceled）或已是 paused 的目标返回错误。
+func (a *AutonomousAgent) PauseGoal(id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	goal, err := a.goalStore.Get(id)
+	if err != nil {
+		return err
+	}
+
+	if s := goal.GetStatus(); s != GoalStatusActive && s != GoalStatusPending {
+		return fmt.Errorf("目标 %q 状态为 %s，不能暂停", id, s)
+	}
+
+	a.setStatus(goal, GoalStatusPaused)
+	// scheduler 中的对象与 store 通常是同一指针，此处兜底同步（reload 后可能不同）
+	a.forEachScheduled(id, func(g *Goal) { g.SetStatus(GoalStatusPaused) })
+	a.saveGoal(goal)
+
+	// 暂停后可睡更久
+	select {
+	case a.wakeReset <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// ResumeGoal 恢复暂停的目标：状态置回 active，并重算已过期或缺失的下次执行时间。
+func (a *AutonomousAgent) ResumeGoal(id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	goal, err := a.goalStore.Get(id)
+	if err != nil {
+		return err
+	}
+
+	if goal.GetStatus() != GoalStatusPaused {
+		return fmt.Errorf("目标 %q 不是暂停状态，无法恢复", id)
+	}
+
+	a.setStatus(goal, GoalStatusActive)
+
+	// 下次执行时间缺失或已过期则重算；仍在未来的保留原计划时刻
+	if next := goal.GetNextRunAt(); next.IsZero() || !next.After(time.Now()) {
+		trigger := newTrigger(goal.Schedule)
+		next, err := trigger.NextRun(time.Now())
+		if err != nil {
+			return fmt.Errorf("重算执行时间失败: %w", err)
+		}
+		goal.SetNextRunAt(next)
+	}
+
+	a.forEachScheduled(id, func(g *Goal) { g.SetStatus(GoalStatusActive) })
+	a.saveGoal(goal)
+
+	// 恢复后可能需要提前唤醒
+	select {
+	case a.wakeReset <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// forEachScheduled 对 scheduler 中指定 ID 的目标执行 fn（a.mu 须已持有）。
+func (a *AutonomousAgent) forEachScheduled(id string, fn func(*Goal)) {
+	if a.scheduler == nil {
+		return
+	}
+	for _, g := range a.scheduler.Goals() {
+		if g.ID == id {
+			fn(g)
+		}
+	}
+}
+
 // Goals 返回所有目标的快照（值拷贝，调用方无需再加锁即可读取字段）。
 func (a *AutonomousAgent) Goals() []Goal {
 	a.mu.RLock()
@@ -304,18 +410,21 @@ func (a *AutonomousAgent) EmitEventWait(event Event, timeout time.Duration) erro
 
 // ─── 内部方法 ───
 
-// handleDueGoals 执行所有到期的目标。
+// handleDueGoals 执行所有到期的目标（逐个顺序执行，每个目标独立产出结果）。
 func (a *AutonomousAgent) handleDueGoals(ctx context.Context) {
 	due := a.scheduler.DueGoals()
 
 	var actionable []*Goal
 	for _, g := range due {
-		if a.preCheck(g) {
+		if ok, reason := a.preCheck(g); ok {
 			actionable = append(actionable, g)
 		} else {
 			// 未通过预检：重排（可能标记终态）并持久化
 			a.reschedule(g)
 			a.saveGoal(g)
+			if a.onSkipped != nil {
+				a.onSkipped(g, reason)
+			}
 		}
 	}
 
@@ -323,15 +432,14 @@ func (a *AutonomousAgent) handleDueGoals(ctx context.Context) {
 		return
 	}
 
-	// 限制单次批量数量
+	// 限制单次唤醒的执行数量；未执行的目标 NextRunAt 仍停留在过去，
+	// 下次唤醒会继续处理
 	if len(actionable) > a.maxBatch {
 		actionable = actionable[:a.maxBatch]
 	}
 
-	if len(actionable) == 1 {
-		a.executeGoal(ctx, actionable[0])
-	} else {
-		a.executeBatch(ctx, actionable)
+	for _, g := range actionable {
+		a.executeGoal(ctx, g)
 	}
 
 	// 执行后必须重排并持久化：否则 NextRunAt 仍停留在过去，
@@ -350,7 +458,8 @@ func (a *AutonomousAgent) saveGoal(goal *Goal) {
 }
 
 // preCheck 零 token 预检，过滤不需要执行的目标。
-func (a *AutonomousAgent) preCheck(goal *Goal) bool {
+// 返回是否通过，以及未通过时的原因（供 OnGoalSkipped 回调使用）。
+func (a *AutonomousAgent) preCheck(goal *Goal) (bool, string) {
 	goal.mu.RLock()
 	status := goal.Status
 	runCount := goal.RunCount
@@ -360,55 +469,53 @@ func (a *AutonomousAgent) preCheck(goal *Goal) bool {
 	goal.mu.RUnlock()
 
 	switch status {
-	case GoalStatusDone, GoalStatusCanceled, GoalStatusFailed:
-		return false
+	case GoalStatusDone:
+		return false, "status_done"
+	case GoalStatusCanceled:
+		return false, "status_canceled"
+	case GoalStatusFailed:
+		return false, "status_failed"
+	case GoalStatusPaused:
+		return false, "status_paused"
 	}
 
 	// 检查最大执行次数
 	if maxRuns > 0 && runCount >= maxRuns {
-		goal.SetStatus(GoalStatusDone)
-		return false
+		a.setStatus(goal, GoalStatusDone)
+		return false, "max_runs_reached"
 	}
 
 	// 检查连续失败次数
-	if failCount >= 3 {
-		goal.SetStatus(GoalStatusFailed)
-		return false
+	if failCount >= a.maxFail {
+		a.setStatus(goal, GoalStatusFailed)
+		return false, "fail_limit_reached"
 	}
 
 	// 事件驱动型：没有事件就不执行
 	if scheduleType == ScheduleEvent {
-		return false
+		return false, "event_driven"
 	}
 
-	return true
+	return true, ""
 }
 
-// executeGoal 执行单个目标。
+// executeGoal 执行单个目标：执行器产出结果，框架负责状态推进、反思、持久化与回调。
 func (a *AutonomousAgent) executeGoal(ctx context.Context, goal *Goal) {
-	ctxData := a.buildContext(goal)
-	prompt := a.buildPrompt(goal, ctxData)
+	if a.onDue != nil {
+		a.onDue(goal)
+	}
 
-	answer, err := a.agent.Ask(ctx, a.session, prompt)
+	answer, err := a.executor.Execute(ctx, goal)
 
 	// 更新目标状态
-	goal.mu.Lock()
-	goal.RunCount++
-	goal.LastRunAt = time.Now()
-	goal.LastResult = answer
 	if err != nil {
-		goal.FailCount++
-		answer = fmt.Sprintf("执行失败: %v", err)
+		goal.RecordRun(fmt.Sprintf("执行失败: %v", err), err)
 	} else {
-		goal.FailCount = 0
+		goal.RecordRun(answer, nil)
 	}
-	goal.mu.Unlock()
 
 	// 反思
-	reflection := a.reflect(ctx, goal, answer)
-	goal.mu.Lock()
-	goal.LastReflect = reflection
-	goal.mu.Unlock()
+	goal.RecordReflect(a.reflect(ctx, goal, answer))
 
 	// 持久化
 	a.saveGoal(goal)
@@ -419,66 +526,88 @@ func (a *AutonomousAgent) executeGoal(ctx context.Context, goal *Goal) {
 	}
 }
 
-// executeBatch 批量执行多个目标（合并为一次 Ask()）。
-func (a *AutonomousAgent) executeBatch(ctx context.Context, goals []*Goal) {
-	prompt := "## 以下目标已到期，请逐一执行\n\n"
-	for i, g := range goals {
-		prompt += fmt.Sprintf("### 目标 %d: %s\n%s\n\n", i+1, g.Title, g.Description)
-	}
-
-	answer, err := a.agent.Ask(ctx, a.session, prompt)
-
-	// 批量更新：与 executeGoal 保持一致的状态推进
-	now := time.Now()
-	for _, g := range goals {
-		g.mu.Lock()
-		g.RunCount++
-		g.LastRunAt = now
-		g.LastResult = answer
-		if err != nil {
-			g.FailCount++
-		} else {
-			g.FailCount = 0
-		}
-		g.mu.Unlock()
-
-		if a.onExecute != nil {
-			a.onExecute(g, answer)
-		}
-	}
-}
-
 // reschedule 重新计算目标的下次执行时间。
+// 状态写入在 goal.mu 锁内完成，OnGoalStatusChange 回调在锁外触发，
+// 保证回调可以安全读取 Goal 的任意字段。
 func (a *AutonomousAgent) reschedule(goal *Goal) {
 	trigger := newTrigger(goal.Schedule)
 
 	goal.mu.Lock()
-	defer goal.mu.Unlock()
+	oldStatus := goal.Status
+	newStatus := GoalStatus("")
 
-	var baseTime time.Time
 	switch goal.Schedule.Type {
 	case ScheduleOneShot:
-		goal.Status = GoalStatusDone
+		newStatus = GoalStatusDone
 		goal.NextRunAt = time.Time{}
-		return
 	case ScheduleInterval:
-		baseTime = goal.LastRunAt
+		if goal.Schedule.Interval <= 0 {
+			// 非法间隔：不设置 NextRunAt，标记失败避免紧循环
+			newStatus = GoalStatusFailed
+			break
+		}
+		if goal.Schedule.Anchored {
+			// 锚定模式：以计划时刻（NextRunAt）为基准推进，执行耗时不会累积漂移；
+			// 错过多个周期时追到最近一个未来槽位，不补跑
+			baseTime := goal.NextRunAt
+			if baseTime.IsZero() {
+				baseTime = goal.LastRunAt
+			}
+			if baseTime.IsZero() {
+				baseTime = time.Now()
+			}
+			next := baseTime.Add(goal.Schedule.Interval)
+			now := time.Now()
+			for !next.After(now) {
+				next = next.Add(goal.Schedule.Interval)
+			}
+			goal.NextRunAt = next
+			break
+		}
+		// 默认模式：以实际执行时刻为基准，等价于"上次完成后间隔 Interval 再执行"
+		baseTime := goal.LastRunAt
 		if baseTime.IsZero() {
 			baseTime = time.Now()
 		}
+		next, err := trigger.NextRun(baseTime)
+		if err != nil {
+			newStatus = GoalStatusFailed
+		} else {
+			goal.NextRunAt = next
+		}
 	case ScheduleCron:
-		baseTime = time.Now()
+		next, err := trigger.NextRun(time.Now())
+		if err != nil {
+			newStatus = GoalStatusFailed
+		} else {
+			goal.NextRunAt = next
+		}
 	case ScheduleEvent:
 		goal.NextRunAt = time.Time{}
-		return
 	}
 
-	next, err := trigger.NextRun(baseTime)
-	if err != nil {
-		goal.Status = GoalStatusFailed
+	if newStatus != "" && newStatus != oldStatus {
+		goal.Status = newStatus
+	}
+	finalOld, finalNew := oldStatus, goal.Status
+	goal.mu.Unlock()
+
+	if finalOld != finalNew && a.onStatusChange != nil {
+		a.onStatusChange(goal, finalOld, finalNew)
+	}
+}
+
+// setStatus 统一的状态变更入口：写入 Goal 并触发 OnGoalStatusChange 回调。
+// 调用方不得持有 goal.mu（回调期间回调方可能读取 Goal 字段）。
+func (a *AutonomousAgent) setStatus(goal *Goal, s GoalStatus) {
+	old := goal.GetStatus()
+	if old == s {
 		return
 	}
-	goal.NextRunAt = next
+	goal.SetStatus(s)
+	if a.onStatusChange != nil {
+		a.onStatusChange(goal, old, s)
+	}
 }
 
 // handleUserInput 处理用户输入（目标管理类指令）。
@@ -517,6 +646,7 @@ func (a *AutonomousAgent) handleEvent(ctx context.Context, event Event) {
 	for _, g := range matched {
 		a.executeGoal(ctx, g)
 		a.reschedule(g)
+		a.saveGoal(g) // 与 handleDueGoals 保持一致：重排后必须落盘
 	}
 }
 
@@ -565,66 +695,6 @@ func (a *AutonomousAgent) reloadGoals() {
 	}
 
 	a.scheduler.ReplaceAll(merged)
-}
-
-// ─── 上下文与 Prompt ───
-
-// ContextData 是构建 prompt 所需的上下文信息。
-type ContextData struct {
-	CurrentTime time.Time
-	Goal        *Goal
-}
-
-func (a *AutonomousAgent) buildContext(goal *Goal) ContextData {
-	return ContextData{
-		CurrentTime: time.Now(),
-		Goal:        goal,
-	}
-}
-
-func (a *AutonomousAgent) buildPrompt(goal *Goal, ctx ContextData) string {
-	goal.mu.RLock()
-	title := goal.Title
-	description := goal.Description
-	status := goal.Status
-	runCount := goal.RunCount
-	lastResult := goal.LastResult
-	lastReflect := goal.LastReflect
-	goal.mu.RUnlock()
-
-	return fmt.Sprintf(`你是一个自治 agent。请根据以下信息判断并执行任务。
-
-## 当前时间
-%s
-
-## 目标
-- 标题: %s
-- 描述: %s
-- 状态: %s
-- 已执行次数: %d
-
-## 上次执行结果
-%s
-
-## 上次反思
-%s
-
-## 可用工具
-你可以使用所有已注册的工具。
-
-## 指令
-1. 判断当前是否需要执行该目标描述的任务
-2. 如果需要，说明具体步骤并执行（通过工具调用）
-3. 如果不需要，说明原因
-4. 执行完毕后，简要总结结果`,
-		ctx.CurrentTime.Format("2006-01-02 15:04:05 MST"),
-		title,
-		description,
-		status,
-		runCount,
-		lastResult,
-		lastReflect,
-	)
 }
 
 // ─── 反思 ───

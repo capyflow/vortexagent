@@ -16,6 +16,7 @@ type GoalStatus string
 const (
 	GoalStatusPending  GoalStatus = "pending"  // 等待执行
 	GoalStatusActive   GoalStatus = "active"   // 活跃（定期执行）
+	GoalStatusPaused   GoalStatus = "paused"   // 暂停（不调度执行，可恢复）
 	GoalStatusDone     GoalStatus = "done"     // 已完成（一次性任务）
 	GoalStatusFailed   GoalStatus = "failed"   // 失败超限
 	GoalStatusCanceled GoalStatus = "canceled" // 被用户取消
@@ -34,8 +35,10 @@ const (
 // Schedule 描述目标的调度规则。
 type Schedule struct {
 	Type     ScheduleType  // 调度类型
-	Delay    time.Duration // 一次性延迟（30 分钟后）
+	Delay    time.Duration // 一次性延迟（30 分钟后）；At 非零时被忽略
+	At       time.Time     // 一次性绝对时刻（如 "今晚 21:00"），优先于 Delay；持久化后跨重启不漂移
 	Interval time.Duration // 周期间隔（每 30 分钟）
+	Anchored bool          // interval 锚定模式：按计划时刻推进而非实际执行时刻，长执行不累积漂移；错过的周期追到最近一个未来槽位，不补跑
 	Cron     string        // cron 表达式（"0 8 * * *"）
 	Event    string        // 事件类型（"github.push"）
 	MaxRuns  int           // 最大执行次数（0=无限）
@@ -62,6 +65,7 @@ type Goal struct {
 	FailCount   int       // 连续失败次数
 	LastResult  string    // 上次执行结果摘要
 	LastReflect string    // 上次反思结论
+	Meta        map[string]string // 业务自定义元数据（如 agent/heartbeat/channel 标记），随目标持久化
 }
 
 // NewGoal 创建 Goal 并初始化 mutex。
@@ -99,12 +103,60 @@ func (g *Goal) SetStatus(s GoalStatus) {
 	g.Status = s
 }
 
+// RecordRun 原子记录一次执行结果：递增 RunCount、更新 LastRunAt 与 LastResult，
+// 并按成败维护 FailCount（成功清零）。
+// 这是包外更新运行状态的唯一入口，避免与框架内部的锁内读写产生 data race。
+func (g *Goal) RecordRun(result string, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.RunCount++
+	g.LastRunAt = time.Now()
+	g.LastResult = result
+	if err != nil {
+		g.FailCount++
+	} else {
+		g.FailCount = 0
+	}
+}
+
+// RecordReflect 原子更新上次反思结论。
+func (g *Goal) RecordReflect(reflection string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.LastReflect = reflection
+}
+
+// SetMeta 并发安全地写入一条元数据。
+func (g *Goal) SetMeta(key, value string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.Meta == nil {
+		g.Meta = make(map[string]string)
+	}
+	g.Meta[key] = value
+}
+
+// GetMeta 并发安全地读取一条元数据；不存在时返回空串。
+func (g *Goal) GetMeta(key string) string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.Meta[key]
+}
+
 // Snapshot 返回目标的值拷贝；调用方可安全读取任意字段而无需再加锁。
+// Meta 为深拷贝：快照与原目标不共享 map，各自修改互不影响。
 // 拷贝中的 mu 指针与原目标共享，仅用于包内序列化，快照使用方不应触碰。
 func (g *Goal) Snapshot() Goal {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return *g
+	cp := *g
+	if g.Meta != nil {
+		cp.Meta = make(map[string]string, len(g.Meta))
+		for k, v := range g.Meta {
+			cp.Meta[k] = v
+		}
+	}
+	return cp
 }
 
 // GoalStore 是目标存储的接口。
