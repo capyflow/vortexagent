@@ -16,24 +16,25 @@ package agent
 
 import (
 	"github.com/capyflow/vortexagent/agent/sessionstore"
+	"github.com/capyflow/vortexagent/ctxengine"
 	"github.com/capyflow/vortexagent/llm"
 )
 
 type Options struct {
-	Provider       llm.Provider
-	Registry       *Registry
-	Model          string
-	Thinking       bool
-	MaxTokens      int
-	MaxIterations  int
-	SystemPrompt   string
-	OnDelta        func(llm.Delta)
-	Hooks          *Hooks
-	Store          sessionstore.Store
-	ContextManager *ContextManager
-	ParallelTools  bool
-	SkillManager   *SkillManager
-	MaxRetries     int
+	Provider      llm.Provider
+	Registry      *Registry
+	Model         string
+	Thinking      bool
+	MaxTokens     int
+	MaxIterations int
+	SystemPrompt  string
+	OnDelta       func(llm.Delta)
+	Hooks         *Hooks
+	Store         sessionstore.Store
+	ContextEngine *ctxengine.Engine
+	ParallelTools bool
+	SkillManager  *SkillManager
+	MaxRetries    int
 
 	// Permissions 全局工具权限检查：每次工具执行前调用，非 VerdictAllow
 	// 的调用被拒绝（错误文本回传模型且不重试）。nil 表示不做权限控制。
@@ -57,21 +58,21 @@ const DefaultSystemPrompt = `你是一个通用 AI 助手，可以使用提供�
 // Agent 是框架核心：循环调度 LLM 与工具，直到模型给出最终回答。
 // 它与任何具体领域无关——领域能力全部来自注入的工具与提示词。
 type Agent struct {
-	provider       llm.Provider
-	registry       *Registry
-	model          string
-	thinking       bool
-	maxTokens      int
-	maxIter        int
-	systemPrompt   string
-	onDelta        func(llm.Delta)
-	hooks          *Hooks
-	store          sessionstore.Store
-	contextManager *ContextManager
-	parallelTools  bool
-	skillManager   *SkillManager
-	maxRetries     int
-	perms          PermissionChecker
+	provider      llm.Provider
+	registry      *Registry
+	model         string
+	thinking      bool
+	maxTokens     int
+	maxIter       int
+	systemPrompt  string
+	onDelta       func(llm.Delta)
+	hooks         *Hooks
+	store         sessionstore.Store
+	contextEngine *ctxengine.Engine
+	parallelTools bool
+	skillManager  *SkillManager
+	maxRetries    int
+	perms         PermissionChecker
 }
 
 // New 创建 Agent。
@@ -86,21 +87,21 @@ func New(opts Options) *Agent {
 	}
 	collectPermissionMatchers(opts.Registry, opts.Permissions)
 	return &Agent{
-		provider:       opts.Provider,
-		registry:       opts.Registry,
-		model:          opts.Model,
-		thinking:       opts.Thinking,
-		maxTokens:      opts.MaxTokens,
-		maxIter:        maxIter,
-		systemPrompt:   sysPrompt,
-		onDelta:        opts.OnDelta,
-		hooks:          opts.Hooks,
-		store:          opts.Store,
-		contextManager: opts.ContextManager,
-		parallelTools:  opts.ParallelTools,
-		skillManager:   opts.SkillManager,
-		maxRetries:     opts.MaxRetries,
-		perms:          opts.Permissions,
+		provider:      opts.Provider,
+		registry:      opts.Registry,
+		model:         opts.Model,
+		thinking:      opts.Thinking,
+		maxTokens:     opts.MaxTokens,
+		maxIter:       maxIter,
+		systemPrompt:  sysPrompt,
+		onDelta:       opts.OnDelta,
+		hooks:         opts.Hooks,
+		store:         opts.Store,
+		contextEngine: opts.ContextEngine,
+		parallelTools: opts.ParallelTools,
+		skillManager:  opts.SkillManager,
+		maxRetries:    opts.MaxRetries,
+		perms:         opts.Permissions,
 	}
 }
 

@@ -33,6 +33,7 @@ type Config struct {
 	Tools        *ToolsConfig       `json:"tools,omitempty"`
 	Permissions  *PermissionsConfig `json:"permissions,omitempty"`
 	Autonomous   *AutonomousConfig  `json:"autonomous,omitempty"`
+	Context      *ContextConfig     `json:"context,omitempty"`
 }
 
 // ProviderConfig LLM 提供方配置。
@@ -107,6 +108,42 @@ type FilesystemToolConfig struct {
 type MemoryToolConfig struct {
 	Enabled bool   `json:"enabled"`
 	Dir     string `json:"dir,omitempty"` // 记忆存储目录，默认 ~/.vortex/memory
+}
+
+// ContextConfig 单会话上下文引擎（ctxengine）配置：活跃上下文有界 +
+// 原始历史归档 + 按需检索。详见 docs/context.md。
+type ContextConfig struct {
+	Enabled bool `json:"enabled"`
+	// SoftRatio 归档触发阈值：估算占用率超过窗口该比例时归档。默认 0.7。
+	SoftRatio float64 `json:"softRatio,omitempty"`
+	// HardRatio 发送前硬校验阈值：估算+maxTokens 超过窗口该比例则先裁剪。
+	// 默认 0.95。
+	HardRatio float64 `json:"hardRatio,omitempty"`
+	// KeepRecentBlocks 归档时保留的最近块数（块 = 相邻用户消息之间的全部
+	// 消息，工具调用与其结果保证同块）。默认 12。
+	KeepRecentBlocks int `json:"keepRecentBlocks,omitempty"`
+	// SummaryBudget 摘要区预算（占窗口比例），超预算触发旧摘要合并。默认 0.10。
+	SummaryBudget float64 `json:"summaryBudget,omitempty"`
+	// Archive 归档存储配置。
+	Archive *ContextArchiveConfig `json:"archive,omitempty"`
+	// Retrieval 检索配置。
+	Retrieval *ContextRetrievalConfig `json:"retrieval,omitempty"`
+	// RetentionDays 归档保留天数，超期自动清理。0 = 永久保留。
+	RetentionDays int `json:"retentionDays,omitempty"`
+}
+
+// ContextArchiveConfig 归档存储配置。
+type ContextArchiveConfig struct {
+	// Backend 存储后端：fs（当前唯一实现）。
+	Backend string `json:"backend,omitempty"`
+	// Dir 归档目录，默认 ~/.vortex/<group>/archive。
+	Dir string `json:"dir,omitempty"`
+}
+
+// ContextRetrievalConfig 检索配置。
+type ContextRetrievalConfig struct {
+	// Limit search_history 默认返回条数。默认 5，最大 20。
+	Limit int `json:"limit,omitempty"`
 }
 
 // SessionConfig 会话存储配置。

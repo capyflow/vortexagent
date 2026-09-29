@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/capyflow/vortexagent/agent/sessionstore"
+	"github.com/capyflow/vortexagent/ctxengine"
 	"github.com/capyflow/vortexagent/llm"
 )
 
@@ -65,6 +66,11 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 	for _, opt := range opts {
 		opt.apply(cfg)
 	}
+	// 上下文引擎启用时，把会话 ID 注入 context：工具调用链会透传它，
+	// search_history / expand_chunk 据此定位"当前会话"的归档。
+	if a.contextEngine != nil {
+		ctx = ctxengine.WithSession(ctx, session.ID)
+	}
 	// 兜底：任何路径（成功或失败）退出前自动保存会话并触发错误钩子。
 	defer func() {
 		if a.store != nil {
@@ -82,10 +88,7 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 	baseLen := len(session.Messages())
 	session.Add(llm.NewTextMessage(llm.RoleUser, userInput))
 
-	if a.contextManager != nil && a.contextManager.ShouldOffload() {
-		_ = a.contextManager.Offload(ctx)
-	}
-
+	windowRetried := false
 	for iter := 1; iter <= a.maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			session.Rollback(baseLen)
@@ -94,6 +97,13 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 
 		start := time.Now()
 		resp, err := a.chat(ctx, session, cfg)
+		if err != nil && a.contextEngine != nil && !windowRetried && ctxengine.IsContextWindowError(err) {
+			// L4 兜底：疑似超窗——落库并裁掉最旧 1/3 块后重试一次。
+			windowRetried = true
+			if a.contextEngine.Relieve(ctx, session.ID, session) {
+				continue
+			}
+		}
 		a.fireLLMCall(ctx, LLMCallInfo{
 			Model:    a.effectiveModel(cfg.skill),
 			Round:    iter,
@@ -116,6 +126,10 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 			}
 			if a.hooks != nil && a.hooks.OnFinish != nil {
 				a.hooks.OnFinish(ctx, answer)
+			}
+			// 轮末：评估归档触发条件（异步执行，不阻塞返回）。
+			if a.contextEngine != nil {
+				a.contextEngine.OnTurnDone(session.ID, session)
 			}
 			return answer, nil
 		}
@@ -145,13 +159,17 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 
 func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *askConfig) (*llm.ChatResponse, error) {
 	var history []llm.Message
-	if a.contextManager != nil {
-		history = a.contextManager.BuildMessages()
+	if a.contextEngine != nil {
+		// 上下文引擎组装：摘要区 + 预算内的最近块（内部完成 L1/L2 两层防线）。
+		history = a.contextEngine.Build(ctx, session)
 	} else {
 		history = session.Messages()
 	}
 
 	systemPrompt := a.buildSystemPromptForSkill(cfg.skill)
+	if a.contextEngine != nil {
+		systemPrompt += contextEnginePromptGuidance
+	}
 	req := &llm.ChatRequest{
 		Model:    a.effectiveModel(cfg.skill),
 		Messages: a.withSystemPrompt(history, systemPrompt),
@@ -183,8 +201,19 @@ func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *as
 			return nil
 		}
 	}
-	return a.provider.Chat(ctx, req, onDelta)
+	resp, err := a.provider.Chat(ctx, req, onDelta)
+	if err == nil && a.contextEngine != nil {
+		// L3：用真实 usage 校准 token 估算系数。
+		a.contextEngine.RecordUsage(session.ID, req.Messages, resp.Usage)
+	}
+	return resp, err
 }
+
+// contextEnginePromptGuidance 上下文引擎启用时追加到系统提示词的检索指引。
+const contextEnginePromptGuidance = `
+
+上下文检索（历史对话）：
+- 较早的对话细节已归档（摘要见【历史对话交接摘要】）。需要回忆早期对话的具体内容（之前讨论的问题、结论、错误与修复、文件改动）时，先调用 search_history(query) 定位相关片段，再调用 expand_chunk(chunk_id) 展开原文；不要仅凭摘要猜测细节。`
 
 // nonRetryableError 标记重试也不会成功的工具错误（权限拦截、未知工具、参数错误、
 // 子任务失败等永久性错误）。execToolWithRetry 见到它立即返回，不再做退避重试。

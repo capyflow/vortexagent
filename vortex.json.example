@@ -15,7 +15,10 @@
     {
       "name": "example-tools",
       "command": "go",
-      "args": ["run", "./examples/mcp-server"],
+      "args": [
+        "run",
+        "./examples/mcp-server"
+      ],
       "env": {}
     }
   ],
@@ -23,11 +26,13 @@
   "tools": {
     "exec": {
       "enabled": false,
-      "workdir": "."
+      "workdir": ".",
+      "maxOutput": 8000
     },
     "filesystem": {
       "enabled": false,
-      "root": "."
+      "root": ".",
+      "maxContent": 8000
     },
     "memory": {
       "enabled": false,
@@ -50,5 +55,20 @@
   "session": {
     "type": "json",
     "file": ""
+  },
+  "context": {
+    "enabled": true,
+    "softRatio": 0.7,
+    "hardRatio": 0.95,
+    "keepRecentBlocks": 12,
+    "summaryBudget": 0.1,
+    "archive": {
+      "backend": "fs",
+      "dir": ""
+    },
+    "retrieval": {
+      "limit": 5
+    },
+    "retentionDays": 0
   }
 }

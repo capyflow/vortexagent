@@ -7,7 +7,7 @@
 **工具（Tool）** 与提示词，框架本身与任何具体领域无关。
 
 - **框架核心**：`llm/`（统一 LLM 协议与多厂商适配）、`agent/`（运行时：循环 / 工具 / 会话 / 钩子 / 存储）
-- **内置扩展**：`tools/mcp/`（MCP 客户端，接入任意语言编写的自定义工具）、`tools/knowledge/`（本地文档知识库工具）、`tools/exec/` 与 `tools/filesystem/`（本机执行与文件读写，可经 CLI 的 `tools` 配置启用）
+- **内置扩展**：`tools/mcp/`（MCP 客户端，接入任意语言编写的自定义工具）、`tools/knowledge/`（本地文档知识库工具）、`tools/exec/` 与 `tools/filesystem/`（本机执行与文件读写，可经 CLI 的 `tools` 配置启用）、`ctxengine/`（单会话上下文引擎：活跃上下文有界、原始历史不可变归档、按需检索，见 `docs/context.md`）
 - **参考应用**：`cmd/vortex/`（通用 REPL CLI）、`examples/`（框架用法示例）
 
 架构设计借鉴了 [earendil-works/pi](https://github.com/earendil-works/pi)（91k stars 的 TS 编码 agent 工具包）的分层思想。
@@ -90,6 +90,9 @@ config/            配置文件 schema 与加载（agent group 数据隔离：~/
 ├──────────────────────── 内置扩展（可选项，按需注册）────────────────────────
 tools/mcp/         MCP 客户端：接入任意语言编写的 MCP server 工具
 tools/knowledge/   本地文档知识库：目录扫描 + 全文关键词检索工具
+ctxengine/         单会话上下文引擎：预算组装、异步归档、状态交接摘要、按需检索
+                   （见 docs/context.md）
+internal/textscore/ 共享评分检索内核（memory / knowledge / ctxengine 三处共用）
 tools/exec/        shell 命令执行工具（超时封顶、输出安全截断）
 tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权）
 ```
@@ -121,18 +124,19 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
 | `tools/mcp` | MCP 客户端：启动子进程 server、自动发现并注册工具 |
 | `tools/exec` | 内置 shell 工具（exec_command）：超时与输出截断防护；自描述权限匹配器（`PermissionMatcherProvider`），`registry.Add` 后带参数模式的权限规则即按 shell 语义生效 |
 | `tools/knowledge` | 可选扩展：文档检索工具（`search_knowledge` / `read_document`，含路径越权防护） |
+| `ctxengine` | 单会话上下文引擎：活跃上下文有界（摘要区 + 最近块）、原始历史不可变归档、状态交接式异步压缩、按需检索工具（`search_history` / `expand_chunk`）——长会话上下文不再线性膨胀（见 `docs/context.md`） |
 
 ## 配置文件（仅参考 CLI 使用）
 
 推荐用 **agent group** 管理配置与数据隔离：group 决定一组独立的本地数据目录
-`~/.vortex/<group>/`，配置、会话、长期记忆、自治目标、上下文卸载文件都默认落在其下：
+`~/.vortex/<group>/`，配置、会话、长期记忆、自治目标、上下文归档都默认落在其下：
 
 ```
 ~/.vortex/<group>/agent.json      配置文件
 ~/.vortex/<group>/sessions.json   会话存储（session.type=json 且 file 留空时）
 ~/.vortex/<group>/memory/         长期记忆（tools.memory.dir 留空时）
 ~/.vortex/<group>/goals.json      自治目标（autonomous.goal_store.file 留空时）
-~/.vortex/<group>/offload/        上下文卸载归档（下游项目接 FileSystemOffload 时）
+~/.vortex/<group>/archive/        上下文归档（context.enabled=true 时）
 ```
 
 配置来源优先级：`-config` 显式路径 > group（运行时 `-group` 或构建时烧录）> 烧录 `DefaultPath`：
@@ -168,7 +172,7 @@ go build -ldflags "-X github.com/capyflow/vortexagent/config.DefaultGroup=my-age
 
 ### 一机多 Agent 部署
 
-一台机器跑多个 agent 时，每个 agent 一个独立 group——配置与会话/记忆/目标/卸载文件
+一台机器跑多个 agent 时，每个 agent 一个独立 group——配置与会话/记忆/目标/上下文归档
 天然隔离在各自的 `~/.vortex/<group>/` 下，无需逐项配置路径（JSON 会话存储是整文件
 覆盖写，共用路径会互相丢数据，group 模式从布局上杜绝了这一点）：
 
@@ -238,7 +242,7 @@ vortex -group agent-b -addr :8082
    autonomous 等），配套 `config.ExpandPath`、`config.LoadDotEnv`、`config.GoalFromConfig`。
    数据隔离用 group：构建时烧录 `config.DefaultGroup`，运行时经 `config.ResolveConfigPath`
    定位 `~/.vortex/<group>/agent.json`，再由 `cfg.ResolveGroupDefaults(group)` 把留空的
-   会话/记忆/目标/卸载路径解析进 group 目录。
+   会话/记忆/目标/上下文归档路径解析进 group 目录。
 
 ## 开发
 

@@ -473,8 +473,8 @@ Connect(配置)
 
 | 机制 | 生命周期 | 粒度 |
 |------|---------|------|
-| `Session.History` | 单次会话内 | 对话原文 |
-| ContextManager 卸载 | 会话内压缩归档（按 sessionID 隔离） | 历史摘要 |
+| `Session.History` | 单次会话内（ctxengine 归档后只剩最近块） | 对话原文 |
+| `ctxengine` 上下文引擎 | 会话内异步归档（原文不可变，摘要 + 按需检索） | 状态交接摘要 + 归档块 |
 | `tools/knowledge` | 人工维护的静态语料，只读 | 文档 |
 | `tools/memory`（本节） | **跨会话，agent 自己增删改查** | 一条记忆一个事实 |
 

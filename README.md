@@ -8,7 +8,7 @@ agents for any domain: document Q&A, coding assistants, ops bots… Domain capab
 from pluggable **tools** and prompts; the framework itself is domain-agnostic.
 
 - **Framework core**: `llm/` (unified LLM protocol with multi-vendor adapters), `agent/` (runtime: loop / tools / sessions / hooks / storage)
-- **Built-in extensions**: `tools/mcp/` (MCP client for custom tools written in any language), `tools/knowledge/` (local document knowledge base), `tools/exec/` and `tools/filesystem/` (shell execution and file access, enabled via the CLI's `tools` config)
+- **Built-in extensions**: `tools/mcp/` (MCP client for custom tools written in any language), `tools/knowledge/` (local document knowledge base), `tools/exec/` and `tools/filesystem/` (shell execution and file access, enabled via the CLI's `tools` config), `ctxengine/` (single-session context engine: bounded context, immutable archive, on-demand retrieval — see `docs/context.md`)
 - **Reference apps**: `cmd/vortex/` (general-purpose REPL CLI), `examples/` (framework usage examples)
 
 The architecture borrows the layering ideas of
@@ -97,6 +97,9 @@ config/            Config file schema & loading (agent group data isolation unde
 ├──────────────────── Built-in extensions (optional; register as needed) ────────────────────
 tools/mcp/         MCP client: connect to MCP servers written in any language
 tools/knowledge/   Local document knowledge base: directory scan + full-text keyword search tools
+ctxengine/         Single-session context engine: budget assembly, async archive,
+                   handoff-style summary, retrieval (see docs/context.md)
+internal/textscore/ Shared lexical scoring kernel used by memory/knowledge/ctxengine
 tools/exec/        Shell command execution tool (timeout cap, safe output truncation)
 tools/filesystem/  File read/write toolset (paths confined to a root, prevents escape)
 ```
@@ -128,19 +131,20 @@ The loop is capped at 10 rounds (`Options.MaxIterations`) to prevent runaway cyc
 | `tools/mcp` | MCP client: spawns subprocess servers, auto-discovers and registers their tools |
 | `tools/exec` | Built-in shell tool (exec_command): timeout & output truncation guard; self-describing permission matchers (`PermissionMatcherProvider`) — after `registry.Add`, patterned permission rules apply with shell semantics |
 | `tools/knowledge` | Optional extension: document retrieval tools (`search_knowledge` / `read_document`, with path-escape protection) |
+| `ctxengine` | Single-session context engine: bounded active context (summary zone + recent blocks), immutable archive, async handoff-style compaction, on-demand retrieval tools (`search_history` / `expand_chunk`) — long sessions stop growing the prompt linearly (see `docs/context.md`) |
 
 ## Configuration file (reference CLI only)
 
 An **agent group** is the recommended way to manage configuration and data isolation: a group
 decides an independent local data directory `~/.vortex/<group>/` where the config, sessions,
-long-term memory, autonomous goals, and context-offload files live by default:
+long-term memory, autonomous goals, and the context archive live by default:
 
 ```
 ~/.vortex/<group>/agent.json      config file
 ~/.vortex/<group>/sessions.json   session storage (when session.type=json and file is empty)
 ~/.vortex/<group>/memory/         long-term memory (when tools.memory.dir is empty)
 ~/.vortex/<group>/goals.json      autonomous goals (when autonomous.goal_store.file is empty)
-~/.vortex/<group>/offload/        context offload archive (when wiring up FileSystemOffload)
+~/.vortex/<group>/archive/        context archive (when context.enabled is true)
 ```
 
 Config resolution order: explicit `-config` path > group (`-group` at runtime or baked in at
@@ -179,7 +183,7 @@ agents). Startup fails when neither a group nor a path is given.
 ### Multi-agent deployment on one machine
 
 Run multiple agents on one machine by giving each its own group — config, sessions, memory,
-goals, and offload files stay naturally isolated under their own `~/.vortex/<group>/`
+goals, and the context archive stay naturally isolated under their own `~/.vortex/<group>/`
 (no per-path configuration needed; the JSON session store rewrites the whole file, so sharing
 a path would lose data — the group layout rules that out by construction):
 
@@ -260,7 +264,7 @@ approval UI / checkers), see [docs/permissions.md](docs/permissions.md) (Chinese
    `config.LoadDotEnv` and `config.GoalFromConfig` alongside. For data isolation use groups:
    bake `config.DefaultGroup` at build time, resolve `~/.vortex/<group>/agent.json` via
    `config.ResolveConfigPath`, then let `cfg.ResolveGroupDefaults(group)` fill the empty
-   session/memory/goal/offload paths into the group directory.
+   session/memory/goal/context-archive paths into the group directory.
 
 ## Development
 

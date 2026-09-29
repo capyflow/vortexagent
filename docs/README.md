@@ -9,6 +9,7 @@
 | [architecture.md](architecture.md) | 想理解设计原理的人 | 框架分层（核心 / 扩展 / 应用）、每个包的职责、关键设计决策与踩坑记录 |
 | [autonomous-agent.md](autonomous-agent.md) | 想使用/集成自治 agent 的人 | 自治 agent 的运行机制（主循环、调度、事件、持久化）与配置/对话/编程三种使用方式 |
 | [permissions.md](permissions.md) | 想控制工具执行风险的人 | 全局工具权限：执行模式、allow/deny 规则、交互确认，以及接入与自定义扩展点 |
+| [context.md](context.md) | 想理解上下文如何被治理的人 | 框架的三种上下文组件（ctxengine / memory / knowledge）的分工、ctxengine 完整机制与配置 |
 | [guide.md](guide.md) | 开发者 | 开发指南与 API 参考 |
 | [../README.md](../README.md) | 所有使用者 | 快速开始、配置参考、扩展指南、测试策略 |
 
@@ -24,6 +25,9 @@ agent/            Agent 运行时：循环（ask.go）、工具（tool.go）、�
                   权限（permission.go，见 docs/permissions.md）、会话与存储（sessionstore/）
 autonomous/       自治 agent：目标管理、精确唤醒调度、事件驱动执行
                   （见 docs/autonomous-agent.md）
+ctxengine/        单会话上下文引擎：预算组装、异步归档、状态交接摘要、归档检索
+                  （见 docs/context.md）
+internal/textscore/ 共享评分检索内核（memory / knowledge / ctxengine 三处共用）
 tools/mcp/        MCP 客户端：接入任意语言编写的自定义工具
 tools/knowledge/  知识库扩展：文档检索工具（可选）
 tools/exec/       shell 命令执行工具（可经 CLI 配置启用）

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,9 +17,11 @@ import (
 	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/autonomous"
 	"github.com/capyflow/vortexagent/config"
+	"github.com/capyflow/vortexagent/ctxengine"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/server"
 	"github.com/capyflow/vortexagent/tools/knowledge"
+	"github.com/capyflow/vortexagent/tools/memory"
 )
 
 func main() {
@@ -90,6 +93,76 @@ func main() {
 		fmt.Printf("已加载知识库: %s\n", strings.Join(cfg.Knowledge, ", "))
 	}
 
+	// 长期记忆（可选）：跨会话事实记忆。归档候选事实也写入这里。
+	var memStore memory.Store
+	if cfg.Tools != nil && cfg.Tools.Memory != nil && cfg.Tools.Memory.Enabled {
+		dir := config.ExpandPath(cfg.Tools.Memory.Dir)
+		if dir == "" {
+			home, _ := os.UserHomeDir()
+			dir = filepath.Join(home, ".vortex", "memory")
+		}
+		ms, merr := memory.NewJSONStore(filepath.Join(dir, "memories.json"))
+		if merr != nil {
+			fmt.Fprintf(os.Stderr, "警告: 启用长期记忆失败: %v\n", merr)
+		} else {
+			memStore = ms
+			for _, t := range memory.NewTools(memStore, nil) {
+				if err := registry.Add(t); err != nil {
+					fmt.Fprintf(os.Stderr, "警告: %v\n", err)
+				}
+			}
+			fmt.Printf("已启用长期记忆六件套（存储 %s）\n", filepath.Join(dir, "memories.json"))
+		}
+	}
+
+	// 上下文引擎（可选）：归档 + 交接摘要 + 归档检索工具。归档候选事实
+	// 写入长期记忆（低置信、带来源，模型确认后转正）。
+	var contextEngine *ctxengine.Engine
+	if cfg.Context != nil && cfg.Context.Enabled {
+		archiveDir := ""
+		if cfg.Context.Archive != nil {
+			archiveDir = config.ExpandPath(cfg.Context.Archive.Dir)
+		}
+		if archiveDir == "" {
+			home, _ := os.UserHomeDir()
+			archiveDir = filepath.Join(home, ".vortex", "archive")
+		}
+		archive, aerr := ctxengine.NewFileSystemArchive(archiveDir)
+		if aerr != nil {
+			fmt.Fprintf(os.Stderr, "警告: 启用上下文引擎失败: %v\n", aerr)
+		} else {
+			engineCfg := ctxengine.Config{
+				Model:            cfg.Provider.Model,
+				SoftRatio:        cfg.Context.SoftRatio,
+				HardRatio:        cfg.Context.HardRatio,
+				KeepRecentBlocks: cfg.Context.KeepRecentBlocks,
+				SummaryBudget:    cfg.Context.SummaryBudget,
+				RetentionDays:    cfg.Context.RetentionDays,
+			}
+			if cfg.Context.Retrieval != nil && cfg.Context.Retrieval.Limit > 0 {
+				engineCfg.RetrievalLimit = cfg.Context.Retrieval.Limit
+			}
+			if memStore != nil {
+				engineCfg.OnCandidateFacts = func(ctx context.Context, sessionID string, facts []ctxengine.CandidateFact) {
+					for _, f := range facts {
+						m := &memory.Memory{Content: f.Content, Kind: memory.KindFact, Importance: 2, Source: f.SourceChunkID}
+						if err := memStore.Put(ctx, m); err != nil {
+							fmt.Fprintf(os.Stderr, "警告: 保存归档候选事实失败: %v\n", err)
+						}
+					}
+				}
+			}
+			contextEngine = ctxengine.New(archive, ctxengine.NewLLMSummarizer(provider, cfg.Provider.Model), engineCfg)
+			contextEngine.StartRetention(context.Background())
+			for _, t := range ctxengine.NewTools(contextEngine) {
+				if err := registry.Add(t); err != nil {
+					fmt.Fprintf(os.Stderr, "警告: %v\n", err)
+				}
+			}
+			fmt.Printf("已启用上下文引擎（归档 %s，候选事实→%s）\n", archiveDir, map[bool]string{true: "长期记忆", false: "丢弃"}[memStore != nil])
+		}
+	}
+
 	// 权限检查器：服务端无交互界面，confirm 模式下未放行的调用自动拒绝——
 	// 需要工具自动执行时，配置 allow 规则、whitelist 模式或 full_access。
 	pcfg := agent.PermissionConfig{}
@@ -122,14 +195,15 @@ func main() {
 	}
 
 	ag := agent.New(agent.Options{
-		Provider:     provider,
-		Registry:     registry,
-		Model:        cfg.Provider.Model,
-		Thinking:     cfg.Provider.Thinking,
-		MaxTokens:    cfg.Provider.MaxTokens,
-		SystemPrompt: cfg.SystemPrompt,
-		MaxRetries:   3,
-		Permissions:  perms,
+		Provider:      provider,
+		Registry:      registry,
+		Model:         cfg.Provider.Model,
+		Thinking:      cfg.Provider.Thinking,
+		MaxTokens:     cfg.Provider.MaxTokens,
+		SystemPrompt:  cfg.SystemPrompt,
+		MaxRetries:    3,
+		Permissions:   perms,
+		ContextEngine: contextEngine,
 	})
 
 	var autoAgent *autonomous.AutonomousAgent

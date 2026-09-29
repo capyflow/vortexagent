@@ -2,14 +2,13 @@
 // 支持增删改查（memory_save / memory_update / memory_delete / memory_get /
 // memory_search / memory_list）。
 //
-// 与框架里其他三类"记忆"机制的边界：
-//   - Session.History：单次会话内的短期记忆，会话结束即封存；
-//   - ContextManager 卸载（OffloadedChunk）：会话内历史压缩归档，按 sessionID 隔离；
+// 与框架里其他三类"记忆"机制的边界（详见 docs/context.md）：
+//   - Session.History + ctxengine：单次会话内的历史与归档，按 sessionID 隔离；
 //   - tools/knowledge：人工维护的静态文档语料，agent 只读。
 //
 // 本包是 agent 在运行中自己写入、跨会话跨进程存活的记忆。粒度为"一条记忆一个
 // 自包含的事实"（偏好、决策、教训等），不保存对话原文——对话历史的沉淀是
-// ContextManager 卸载的职责。
+// ctxengine 归档的职责（其抽取的候选事实以低置信 + Source 标记落在本库）。
 //
 // 第一版采用 JSON 文件存储 + 关键词评分检索（CJK 二元组分词），仅用标准库。
 // 两个抽象为后续演进预留：
@@ -46,13 +45,16 @@ const ImportanceDefault = 3
 
 // Memory 是一条长期记忆：一个自包含的事实陈述，而非对话原文。
 type Memory struct {
-	ID         string    `json:"id"`
-	Content    string    `json:"content"`
-	Kind       string    `json:"kind,omitempty"`
-	Tags       []string  `json:"tags,omitempty"`
-	Importance int       `json:"importance,omitempty"` // 1-5，5 最重要
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string   `json:"id"`
+	Content    string   `json:"content"`
+	Kind       string   `json:"kind,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Importance int      `json:"importance,omitempty"` // 1-5，5 最重要
+	// Source 记忆来源标记（可选）：ctxengine 归档抽取的候选事实填 chunk ID，
+	// 显式 memory_save 留空。仅作溯源展示，不参与检索评分。
+	Source    string    `json:"source,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Store 是记忆的持久化抽象，实现方必须并发安全。

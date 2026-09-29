@@ -363,14 +363,23 @@ ag := agent.New(agent.Options{
 
 重试策略：指数退避（1s → 2s → 4s → ...）
 
-### 上下文管理
+### 上下文管理（ctxengine）
 
-自动压缩过长的历史：
+单会话上下文引擎：活跃上下文保持有界（摘要区 + 最近块），原始历史不可变归档，
+模型经 search_history / expand_chunk 按需检索归档原文。详见 docs/context.md。
 
 ```go
+archive, _ := ctxengine.NewFileSystemArchive("~/.vortex/my-agent/archive")
 ag := agent.New(agent.Options{
-    ContextManager: agent.NewContextManager(session, nil, provider, nil),
+    Provider:      provider,
+    ContextEngine: ctxengine.New(archive, ctxengine.NewLLMSummarizer(provider, "your-model"), ctxengine.Config{
+        Model: "your-model",
+    }),
 })
+// 把归档检索工具注册进 registry：
+for _, t := range ctxengine.NewTools(engine) {
+    registry.Add(t)
+}
 ```
 
 ### 生命周期钩子
@@ -438,7 +447,7 @@ type Options struct {
     OnDelta        func(llm.Delta)
     Hooks          *Hooks
     Store          sessionstore.Store
-    ContextManager *ContextManager
+    ContextEngine  *ctxengine.Engine
     ParallelTools  bool
     SkillManager   *SkillManager
     MaxRetries     int

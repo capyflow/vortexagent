@@ -49,10 +49,10 @@ func GroupGoalStoreFile(group string) string {
 	return filepath.Join(GroupDir(group), "goals.json")
 }
 
-// GroupOffloadDir 返回 group 目录下的上下文卸载（归档）目录，
-// 作为 sessionstore.NewFileSystemOffload 的 baseDir。
-func GroupOffloadDir(group string) string {
-	return filepath.Join(GroupDir(group), "offload")
+// GroupArchiveDir 返回 group 目录下的上下文归档目录，
+// 作为 ctxengine FileSystemArchive 的 baseDir。
+func GroupArchiveDir(group string) string {
+	return filepath.Join(GroupDir(group), "archive")
 }
 
 // ResolveConfigPath 计算生效的配置文件路径与隔离 group。
@@ -79,9 +79,9 @@ func ResolveConfigPath(configPath, group string) (path, effectiveGroup string, e
 
 // ResolveGroupDefaults 把配置中留空的本地状态路径填充到 group 目录下，实现 group 级隔离：
 // session.file → <group>/sessions.json，tools.memory.dir → <group>/memory，
-// autonomous.goal_store.file → <group>/goals.json。显式指定的路径保持原样
-// （可用于有意跨 agent 共享记忆等场景）。同时确保 group 目录存在。
-// group 为空时不做任何事。
+// autonomous.goal_store.file → <group>/goals.json，context.archive.dir → <group>/archive。
+// 显式指定的路径保持原样（可用于有意跨 agent 共享记忆等场景）。
+// 同时确保 group 目录存在。group 为空时不做任何事。
 func (c *Config) ResolveGroupDefaults(group string) error {
 	dir := GroupDir(group)
 	if dir == "" {
@@ -98,6 +98,14 @@ func (c *Config) ResolveGroupDefaults(group string) error {
 	}
 	if c.Autonomous != nil && c.Autonomous.Enabled && c.Autonomous.GoalStore.File == "" {
 		c.Autonomous.GoalStore.File = GroupGoalStoreFile(group)
+	}
+	if c.Context != nil && c.Context.Enabled {
+		if c.Context.Archive == nil {
+			c.Context.Archive = &ContextArchiveConfig{}
+		}
+		if c.Context.Archive.Dir == "" {
+			c.Context.Archive.Dir = GroupArchiveDir(group)
+		}
 	}
 	return nil
 }

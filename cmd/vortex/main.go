@@ -31,6 +31,7 @@ import (
 	"github.com/capyflow/vortexagent/agent"
 	"github.com/capyflow/vortexagent/agent/sessionstore"
 	"github.com/capyflow/vortexagent/config"
+	"github.com/capyflow/vortexagent/ctxengine"
 	"github.com/capyflow/vortexagent/llm"
 	"github.com/capyflow/vortexagent/tools/exec"
 	"github.com/capyflow/vortexagent/tools/filesystem"
@@ -114,13 +115,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP。
+	// 2. 注册工具：内置工具（可选）+ 知识库 + MCP + 上下文检索。
 	// 权限检查器先构建，随 Options.Permissions 注入；Agent 创建时会自动
 	// 收集工具自声明的权限匹配器（如 exec_command 的命令匹配器）。
 	registry := agent.NewRegistry()
 	perms := buildPermissions(cfg)
+	var memStore memory.Store
 	if cfg.Tools != nil {
-		registerBuiltinTools(registry, cfg.Tools)
+		memStore = registerBuiltinTools(registry, cfg.Tools)
 	}
 	if len(cfg.Knowledge) > 0 {
 		kb := knowledge.NewKB(cfg.Knowledge)
@@ -130,6 +132,54 @@ func main() {
 			}
 		}
 		fmt.Printf("已加载知识库: %s\n", strings.Join(cfg.Knowledge, ", "))
+	}
+
+	// 2.5 上下文引擎（可选）：归档 + 交接摘要 + 归档检索工具。
+	// 归档抽取的候选事实回调写入长期记忆（低置信、带来源，模型确认后转正）。
+	var contextEngine *ctxengine.Engine
+	if cfg.Context != nil && cfg.Context.Enabled {
+		archiveDir := ""
+		if cfg.Context.Archive != nil {
+			archiveDir = config.ExpandPath(cfg.Context.Archive.Dir)
+		}
+		if archiveDir == "" {
+			home, _ := os.UserHomeDir()
+			archiveDir = filepath.Join(home, ".vortex", "archive")
+		}
+		archive, aerr := ctxengine.NewFileSystemArchive(archiveDir)
+		if aerr != nil {
+			fmt.Fprintf(os.Stderr, "警告: 启用上下文引擎失败: %v\n", aerr)
+		} else {
+			engineCfg := ctxengine.Config{
+				Model:            cfg.Provider.Model,
+				SoftRatio:        cfg.Context.SoftRatio,
+				HardRatio:        cfg.Context.HardRatio,
+				KeepRecentBlocks: cfg.Context.KeepRecentBlocks,
+				SummaryBudget:    cfg.Context.SummaryBudget,
+				RetentionDays:    cfg.Context.RetentionDays,
+			}
+			if cfg.Context.Retrieval != nil && cfg.Context.Retrieval.Limit > 0 {
+				engineCfg.RetrievalLimit = cfg.Context.Retrieval.Limit
+			}
+			if memStore != nil {
+				engineCfg.OnCandidateFacts = func(ctx context.Context, sessionID string, facts []ctxengine.CandidateFact) {
+					for _, f := range facts {
+						m := &memory.Memory{Content: f.Content, Kind: memory.KindFact, Importance: 2, Source: f.SourceChunkID}
+						if err := memStore.Put(ctx, m); err != nil {
+							fmt.Fprintf(os.Stderr, "警告: 保存归档候选事实失败: %v\n", err)
+						}
+					}
+				}
+			}
+			contextEngine = ctxengine.New(archive, ctxengine.NewLLMSummarizer(provider, cfg.Provider.Model), engineCfg)
+			contextEngine.StartRetention(ctx)
+			for _, t := range ctxengine.NewTools(contextEngine) {
+				if err := registry.Add(t); err != nil {
+					fmt.Fprintln(os.Stderr, "警告:", err)
+				}
+			}
+			fmt.Printf("已启用上下文引擎（归档 %s，候选事实→%s）\n", archiveDir, map[bool]string{true: "长期记忆", false: "日志"}[memStore != nil])
+		}
 	}
 
 	var mcpClients []*mcp.Client
@@ -213,14 +263,15 @@ func main() {
 	// 4. 创建 agent 并进入交互循环
 	var firstDelta bool = true
 	ag := agent.New(agent.Options{
-		Provider:     provider,
-		Registry:     registry,
-		Model:        cfg.Provider.Model,
-		Thinking:     cfg.Provider.Thinking,
-		MaxTokens:    cfg.Provider.MaxTokens,
-		SystemPrompt: cfg.SystemPrompt,
-		Store:        store,
-		Permissions:  perms,
+		Provider:      provider,
+		Registry:      registry,
+		Model:         cfg.Provider.Model,
+		Thinking:      cfg.Provider.Thinking,
+		MaxTokens:     cfg.Provider.MaxTokens,
+		SystemPrompt:  cfg.SystemPrompt,
+		Store:         store,
+		Permissions:   perms,
+		ContextEngine: contextEngine,
 		OnDelta: func(d llm.Delta) {
 			if d.Thinking != "" {
 				fmt.Fprintf(os.Stderr, "\033[90m%s\033[0m", d.Thinking)
@@ -320,14 +371,15 @@ func buildPermissions(cfg *config.Config) *agent.Checker {
 	return checker
 }
 
-// registerBuiltinTools 按配置注册内置工具（exec / filesystem / memory）。
-func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
+// registerBuiltinTools 按配置注册内置工具（exec / filesystem / memory），
+// 返回创建的长期记忆存储（未启用时为 nil，供上下文引擎的候选事实回调复用）。
+func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) memory.Store {
 	if cfg.Exec != nil && cfg.Exec.Enabled {
 		workdir := cfg.Exec.Workdir
 		if workdir == "" {
 			workdir = "."
 		}
-		if err := registry.Add(exec.NewExecTool(workdir)); err != nil {
+		if err := registry.Add(exec.NewExecTool(workdir, exec.WithMaxOutput(cfg.Exec.MaxOutput))); err != nil {
 			fmt.Fprintln(os.Stderr, "警告:", err)
 		} else {
 			fmt.Printf("已启用内置工具: exec_command（工作目录 %s，受 permissions 权限控制）\n", workdir)
@@ -339,7 +391,7 @@ func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
 			root = "."
 		}
 		tools := []agent.Tool{
-			filesystem.NewReadFileTool(root),
+			filesystem.NewReadFileTool(root, filesystem.WithMaxContent(cfg.Filesystem.MaxContent)),
 			filesystem.NewWriteFileTool(root),
 			filesystem.NewEditFileTool(root),
 			filesystem.NewListFilesTool(root),
@@ -360,15 +412,17 @@ func registerBuiltinTools(registry *agent.Registry, cfg *config.ToolsConfig) {
 		memStore, err := memory.NewJSONStore(filepath.Join(dir, "memories.json"))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "警告: 启用长期记忆失败:", err)
-		} else {
-			for _, t := range memory.NewTools(memStore, nil) {
-				if err := registry.Add(t); err != nil {
-					fmt.Fprintln(os.Stderr, "警告:", err)
-				}
-			}
-			fmt.Printf("已启用内置工具: 长期记忆六件套（存储 %s）\n", filepath.Join(dir, "memories.json"))
+			return nil
 		}
+		for _, t := range memory.NewTools(memStore, nil) {
+			if err := registry.Add(t); err != nil {
+				fmt.Fprintln(os.Stderr, "警告:", err)
+			}
+		}
+		fmt.Printf("已启用内置工具: 长期记忆六件套（存储 %s）\n", filepath.Join(dir, "memories.json"))
+		return memStore
 	}
+	return nil
 }
 
 // handleCommand 处理斜杠命令，返回 (是否已处理, 是否退出)。

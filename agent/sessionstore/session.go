@@ -10,22 +10,11 @@ import (
 	"github.com/capyflow/vortexagent/llm"
 )
 
-type OffloadedChunk struct {
-	ID        string         `json:"id"`
-	Summary   string         `json:"summary"`
-	MsgCount  int            `json:"msg_count"`
-	StartIdx  int            `json:"start_idx"` // 原始完整历史中的起始位置
-	EndIdx    int            `json:"end_idx"`   // 原始完整历史中的结束位置
-	CreatedAt time.Time      `json:"created_at"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-}
-
 type Session struct {
 	mu        sync.RWMutex
 	ID        string
 	Model     string
-	History   []llm.Message    // 活跃区
-	Offloaded []OffloadedChunk // 卸载区（历史摘要）
+	History   []llm.Message // 活跃区（上下文引擎归档后只剩最近块，见 ctxengine）
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -72,13 +61,12 @@ func (s *Session) MessageCount() int {
 	return len(s.History)
 }
 
-// ReplaceHistory 用 keep 替换活跃历史并记录卸载块（ContextManager 卸载专用）。
-// 替换与追加在同一把锁内完成——分开写会产生中间态（历史已换、卸载块未记）。
-func (s *Session) ReplaceHistory(keep []llm.Message, chunk OffloadedChunk) {
+// ResetTo 用 keep 整体替换活跃历史（ctxengine 归档专用）：替换与追加在
+// 同一把锁内完成，避免产生中间态。keep 为空等价于 Clear。
+func (s *Session) ResetTo(keep []llm.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.History = keep
-	s.Offloaded = append(s.Offloaded, chunk)
 	s.UpdatedAt = time.Now()
 }
 
@@ -126,33 +114,6 @@ func (s *Session) Reset(other *Session) {
 	s.ID = other.ID
 	s.Model = other.Model
 	s.History = other.History
-	s.Offloaded = other.Offloaded
 	s.CreatedAt = other.CreatedAt
 	s.UpdatedAt = other.UpdatedAt
-}
-
-func (s *Session) AddOffloaded(chunk OffloadedChunk) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Offloaded = append(s.Offloaded, chunk)
-	s.UpdatedAt = time.Time{}
-}
-
-func (s *Session) GetOffloaded() []OffloadedChunk {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.Offloaded
-}
-
-func (s *Session) ClearOffloaded() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Offloaded = nil
-	s.UpdatedAt = time.Time{}
-}
-
-func (s *Session) OffloadedCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.Offloaded)
 }
