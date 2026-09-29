@@ -43,9 +43,13 @@ func safeResolve(rootDir, path string) (string, error) {
 	}
 	target = filepath.Clean(target)
 
-	if !withinRoot(rootReal, target) {
+	// 第一层：未解析路径对未解析根目录比较（rootDir 本身可能位于符号链接
+	// 路径之下，如 macOS 的 /var → /private/var；拿解析后的根比较未解析的
+	// 目标会误报越界）。
+	if !withinRoot(rootAbs, target) {
 		return "", fmt.Errorf("路径越界: %s", path)
 	}
+	// 第二层：解析符号链接后，真实路径对真实根目录再校验一次。
 	if real, err := filepath.EvalSymlinks(target); err == nil {
 		if !withinRoot(rootReal, real) {
 			return "", fmt.Errorf("路径越界（符号链接）: %s", path)
