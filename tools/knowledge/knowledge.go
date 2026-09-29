@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/capyflow/vortexagent/internal/textscore"
 )
 
 // 默认配置常量。
@@ -119,8 +121,9 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 
 	// fileHits 聚合一个文件的全部命中行，用于排序与展平。
 	type fileHits struct {
-		path string // 相对各自 root 的展示路径
-		hits []Result
+		path  string // 相对各自 root 的展示路径
+		hits  []Result
+		score float64 // 文件级相关度（textscore 评分），主排序键
 	}
 
 	var matched []fileHits
@@ -150,8 +153,8 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 			if err != nil {
 				return nil
 			}
-			if hits := k.searchFile(ctx, path, filepath.ToSlash(rel), tokens); len(hits) > 0 {
-				matched = append(matched, fileHits{path: filepath.ToSlash(rel), hits: hits})
+			if hits, score := k.searchFile(ctx, path, filepath.ToSlash(rel), tokens); len(hits) > 0 {
+				matched = append(matched, fileHits{path: filepath.ToSlash(rel), hits: hits, score: score})
 			}
 			return nil
 		})
@@ -172,8 +175,13 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 		return nil, firstErr
 	}
 
-	// 命中行数降序、路径字典序升序，稳定排序保证同命中数的文件顺序确定。
+	// 文件级相关度（textscore 评分，与 memory/ctxengine 共享的评分内核）
+	// 降序为主排序键；评分相同再按命中行数降序、路径字典序升序，
+	// 稳定排序保证同分文件的顺序确定。
 	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].score != matched[j].score {
+			return matched[i].score > matched[j].score
+		}
 		if len(matched[i].hits) != len(matched[j].hits) {
 			return len(matched[i].hits) > len(matched[j].hits)
 		}
@@ -192,36 +200,42 @@ func (k *KB) Search(ctx context.Context, query string, limit int) ([]Result, err
 	return results, nil
 }
 
-// searchFile 在单个文件中检索关键词，返回命中行列表；文件超限、二进制、
-// 读取失败或无命中时返回 nil。absPath 用于读取，relPath 用于结果展示。
+// searchFile 在单个文件中检索关键词，返回命中行列表与文件级相关度评分
+// （textscore 评分，0 分不会发生——命中前提是全部关键词都在文件中出现）；
+// 文件超限、二进制、读取失败或无命中时返回 nil, 0。
+// absPath 用于读取，relPath 用于结果展示。
 // tokens 为小写化后的关键词列表，命中行必须包含全部关键词。
-func (k *KB) searchFile(ctx context.Context, absPath, relPath string, tokens []string) []Result {
+func (k *KB) searchFile(ctx context.Context, absPath, relPath string, tokens []string) ([]Result, float64) {
 	if ctx.Err() != nil {
-		return nil
+		return nil, 0
 	}
 	fi, err := os.Stat(absPath)
 	if err != nil || fi.IsDir() {
-		return nil
+		return nil, 0
 	}
 	if fi.Size() > k.maxFileSize {
-		return nil // 超过大小上限，跳过
+		return nil, 0 // 超过大小上限，跳过
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	if looksBinary(data) {
-		return nil // 二进制文件，跳过
+		return nil, 0 // 二进制文件，跳过
 	}
+	content := string(data)
+	// 文件级相关度：与 memory/ctxengine 共享的 textscore 评分内核，
+	// 作为文件排序的主键（优于裸命中行数：区分"顺带提到"与"核心主题"）。
+	score := textscore.Score(strings.Join(tokens, " "), content, textscore.Options{})
 	// 整文快速预检：所有关键词都出现才逐行匹配，避免对不相关文件逐行做小写转换。
 	lower := bytes.ToLower(data)
 	for _, tok := range tokens {
 		if !bytes.Contains(lower, []byte(tok)) {
-			return nil
+			return nil, 0
 		}
 	}
 
-	lines := strings.Split(string(data), "\n")
+	lines := strings.Split(content, "\n")
 	hits := make([]Result, 0)
 	for i, line := range lines {
 		if !lineContainsAll(line, tokens) {
@@ -234,7 +248,10 @@ func (k *KB) searchFile(ctx context.Context, absPath, relPath string, tokens []s
 			Context: buildContext(lines, i),
 		})
 	}
-	return hits
+	if len(hits) == 0 {
+		return nil, 0
+	}
+	return hits, score
 }
 
 // lineContainsAll 判断一行（小写化后）是否包含全部关键词。
