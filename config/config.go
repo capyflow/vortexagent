@@ -89,12 +89,18 @@ type PermissionsConfig struct {
 type ExecToolConfig struct {
 	Enabled bool   `json:"enabled"`
 	Workdir string `json:"workdir,omitempty"` // 工作目录，默认当前目录
+	// MaxOutput 命令输出进入会话历史前的截断上限（字符）。
+	// 0/未配置取默认 8000；-1 表示不限制（不建议）。
+	MaxOutput int `json:"maxOutput,omitempty"`
 }
 
 // FilesystemToolConfig filesystem 工具组配置。
 type FilesystemToolConfig struct {
 	Enabled bool   `json:"enabled"`
 	Root    string `json:"root,omitempty"` // 允许访问的根目录，默认当前目录
+	// MaxContent read_file 内容进入会话历史前的截断上限（字符）。
+	// 0/未配置取默认 8000；-1 表示不限制（不建议）。
+	MaxContent int `json:"maxContent,omitempty"`
 }
 
 // MemoryToolConfig 长期记忆工具组配置。

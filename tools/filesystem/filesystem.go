@@ -73,10 +73,29 @@ func withinRoot(root, path string) bool {
 
 type ReadFileTool struct {
 	rootDir string
+	// maxContent 读入内容进入会话历史前的截断上限（字符）：
+	// 0 取 DefaultMaxContentChars，负数不限。截断标注原始长度，
+	// 完整内容可通过分段读取或归档回读获得。
+	maxContent int
 }
 
-func NewReadFileTool(rootDir string) *ReadFileTool {
-	return &ReadFileTool{rootDir: rootDir}
+// DefaultMaxContentChars read_file 结果的默认截断上限（字符）。
+const DefaultMaxContentChars = 8000
+
+// ReadOption 修改 ReadFileTool 配置。
+type ReadOption func(*ReadFileTool)
+
+// WithMaxContent 设置读取内容的截断上限（字符）；负数不限，0 取默认。
+func WithMaxContent(n int) ReadOption {
+	return func(t *ReadFileTool) { t.maxContent = n }
+}
+
+func NewReadFileTool(rootDir string, opts ...ReadOption) *ReadFileTool {
+	t := &ReadFileTool{rootDir: rootDir}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *ReadFileTool) Name() string { return "read_file" }
@@ -126,7 +145,28 @@ func (t *ReadFileTool) Call(ctx context.Context, args map[string]any) (string, e
 		return "", fmt.Errorf("读取文件失败: %w", err)
 	}
 
-	return string(data), nil
+	// 源头节流：进入历史的读取结果按上限截断（0 取默认，负数不限）。
+	limit := t.maxContent
+	if limit == 0 {
+		limit = DefaultMaxContentChars
+	}
+	out := truncateWithMarker(string(data), limit)
+	if out == "" {
+		return "（空文件）", nil
+	}
+	return out, nil
+}
+
+// truncateWithMarker 按 rune 上限截断并标注原始长度（max<0 不限制）。
+func truncateWithMarker(s string, max int) string {
+	if max < 0 {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + fmt.Sprintf("\n[…文件内容已截断，完整内容共 %d 字符；可结合 list_files/edit_file 精准定位所需部分]", len(rs))
 }
 
 type WriteFileTool struct {

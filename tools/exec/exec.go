@@ -16,8 +16,13 @@ const (
 	DefaultTimeout = 30 * time.Second
 	// MaxTimeout 限制模型可请求的最大超时：模型可能传超大值把调用方拖住
 	// 数小时，上限封顶后超长任务应交给后台机制（如 TaskHub）。
-	MaxTimeout    = 10 * time.Minute
+	MaxTimeout = 10 * time.Minute
+	// MaxOutputSize 单路输出（stdout/stderr）的硬上限：防止极端输出撑爆内存。
 	MaxOutputSize = 100 * 1024 // 100KB
+	// DefaultMaxOutputChars 工具结果进入会话历史前的默认截断上限（字符）。
+	// 这是上下文源头节流的第一道闸——大输出根本不进上下文。0/未配置取此默认，
+	// -1 表示不限制（不建议）。
+	DefaultMaxOutputChars = 8000
 )
 
 // ToolName 是本工具在 Registry 中的名字，权限规则用工具名引用它
@@ -26,10 +31,26 @@ const ToolName = "exec_command"
 
 type ExecTool struct {
 	workingDir string
+	// maxOutput 结果进入历史前的截断上限（字符）：0 取 DefaultMaxOutputChars，
+	// 负数不限。截断不影响命令本身的执行，完整输出若已归档可经
+	// expand_chunk 回读（见 ctxengine）。
+	maxOutput int
 }
 
-func NewExecTool(workingDir string) *ExecTool {
-	return &ExecTool{workingDir: workingDir}
+// Option 修改 ExecTool 配置。
+type Option func(*ExecTool)
+
+// WithMaxOutput 设置结果截断上限（字符）；负数不限，0 取默认。
+func WithMaxOutput(n int) Option {
+	return func(t *ExecTool) { t.maxOutput = n }
+}
+
+func NewExecTool(workingDir string, opts ...Option) *ExecTool {
+	t := &ExecTool{workingDir: workingDir}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *ExecTool) Name() string { return ToolName }
@@ -109,18 +130,37 @@ func (t *ExecTool) Call(ctx context.Context, args map[string]any) (string, error
 		result.WriteString(output)
 	}
 
+	// 源头节流：进入历史的最终结果按上限截断（0 取默认，负数不限）。
+	limit := t.maxOutput
+	if limit == 0 {
+		limit = DefaultMaxOutputChars
+	}
+	out := truncateWithMarker(result.String(), limit)
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return result.String(), fmt.Errorf("命令执行超时（%v）", timeout)
+			return out, fmt.Errorf("命令执行超时（%v）", timeout)
 		}
-		return result.String(), fmt.Errorf("命令执行失败: %w", err)
+		return out, fmt.Errorf("命令执行失败: %w", err)
 	}
 
-	if result.Len() == 0 {
+	if out == "" {
 		return "命令执行成功（无输出）", nil
 	}
 
-	return result.String(), nil
+	return out, nil
+}
+
+// truncateWithMarker 按 rune 上限截断并标注原始长度（max<0 不限制）。
+func truncateWithMarker(s string, max int) string {
+	if max < 0 {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + fmt.Sprintf("\n[…输出已截断，完整输出共 %d 字符]", len(rs))
 }
 
 // truncateUTF8 按字节上限截断并回退到完整的 rune 边界，
