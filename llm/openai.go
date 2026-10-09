@@ -197,6 +197,12 @@ func (p *OpenAIProvider) buildWireMessage(m Message) (wireChatMessage, error) {
 				if err != nil {
 					return w, fmt.Errorf("openai: 序列化工具参数失败: %w", err)
 				}
+				// nil map（模型无参调用）会序列化为字面量 "null"；OpenAI 规范要求
+				// arguments 为 JSON 对象字符串，部分 provider（如 StepFun）会拒绝，
+				// 统一归一化为 "{}"。
+				if len(args) == 0 || string(args) == "null" {
+					args = []byte("{}")
+				}
 				w.ToolCalls = append(w.ToolCalls, wireToolCall{
 					ID:   tc.ID,
 					Type: "function",
@@ -357,6 +363,10 @@ func parseToolArguments(raw string) map[string]any {
 		return args
 	}
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return map[string]any{}
+	}
+	if args == nil {
+		// "null" 是合法 JSON 但会解出 nil map，重放时序列化回 "null" 会被 provider 拒绝
 		return map[string]any{}
 	}
 	return args
