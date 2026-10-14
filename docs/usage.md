@@ -339,7 +339,9 @@ CLI 配置启用 `tools.filesystem` + `tools.exec`，`OnBeforeToolCall` 做 exec
 1. **TaskHub 的 ctx 必须是应用级的**：传入某次 HTTP 请求的 ctx 会在请求结束时误杀后台任务；
 2. **exec 工具默认无命令限制**：风险自担，务必配权限钩子做白名单；
 3. **工具描述即接口文档**：模型据此决定是否调用、怎么传参，含糊的描述是错误调用的第一原因；
-4. **轮数上限**：Ask 默认最多 10 轮（`MaxIterations` 可调），防模型死循环烧钱；
+4. **轮数上限**：Ask 默认最多 10 轮（`MaxIterations` 可调，单次提问可用
+   `agent.WithMaxIterations(n)` 覆盖），防模型死循环烧钱。耗尽时会话**不回滚**：
+   已完成的推理与工具结果保留，错误可用 `errors.Is(err, agent.ErrIterationLimit)` 识别；
 5. **并行钩子**：开启 `ParallelTools` 时钩子可能被并发调用，实现里别用非线程安全的共享状态。
 
 ---

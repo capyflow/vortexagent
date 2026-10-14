@@ -112,7 +112,9 @@ User asks → call LLM with history + tool declarations
   → final answer returned → done
 ```
 
-The loop is capped at 10 rounds (`Options.MaxIterations`) to prevent runaway cycles.
+The loop is capped at 10 rounds (`Options.MaxIterations`, or `WithMaxIterations` per call)
+to prevent runaway cycles. On exhaustion the session history is kept — check
+`errors.Is(err, ErrIterationLimit)`.
 
 ## Framework capabilities
 

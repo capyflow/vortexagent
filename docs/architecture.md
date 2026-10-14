@@ -183,6 +183,11 @@ type Provider interface {
 最终的结构化结果（工具调用、完整文本）等流结束由 provider 拼好统一返回。
 这样 agent 循环不需要处理"半截 JSON 的工具调用"，逻辑简单很多。
 
+同理，OpenAI 兼容网关在 `stream=true` 时默认不在流中回传 token 统计，
+`llm/openai.go` 会主动带上 `stream_options: {"include_usage": true}` 索取末片 usage，
+`OnLLMCall` 的用量数据才有值。个别严格网关会因这个未知字段报 400，
+可用 `llm.WithStreamUsage(false)` 关断（代价是流式请求统计为 0）。
+
 ### 2.4 工厂方法
 
 ```go
@@ -287,7 +292,7 @@ func (a *Agent) Ask(ctx context.Context, session *Session, userInput string) (st
         }
         // ⑥ 回到 ③，把"工具结果"交给模型继续思考
     }
-    return "", fmt.Errorf("工具调用超过 %d 轮仍未结束", a.maxIter)
+    return "", fmt.Errorf("工具调用超过 %d 轮仍未结束: %w", maxIter, ErrIterationLimit)
 }
 ```
 

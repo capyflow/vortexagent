@@ -105,7 +105,8 @@ tools/filesystem/  文件读写工具组（路径限制在 root 内，防越权�
   → 模型给出最终回答 → 返回
 ```
 
-循环上限 10 轮（`Options.MaxIterations` 可配），避免死循环。
+循环上限 10 轮（`Options.MaxIterations` 可配，单次提问用 `WithMaxIterations` 覆盖），避免死循环。
+耗尽时不回滚历史，错误可用 `errors.Is(err, ErrIterationLimit)` 识别。
 
 ## 框架能力
 
