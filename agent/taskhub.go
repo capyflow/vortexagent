@@ -282,7 +282,9 @@ func (h *TaskHub) Wait(ctx context.Context, ids []string) ([]string, error) {
 	for _, id := range resolved {
 		t, ok := h.Status(id)
 		if !ok {
-			return resolved, fmt.Errorf("agent: 任务 %s 不存在", id)
+			// 只有已进终态的任务会被 pruneLocked 淘汰：解析之后查不到，
+			// 说明它在这两次加锁之间已经结束并被清理，等同等待完成。
+			continue
 		}
 		select {
 		case <-t.done:
