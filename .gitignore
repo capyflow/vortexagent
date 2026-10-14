@@ -11,3 +11,8 @@ vortex.json
 #   新增文件会被 git 静默吞掉）
 /vortex
 /vortex-serve
+
+# macOS 访达元数据与本地会话工具目录
+.DS_Store
+/.workbuddy/
+/.zcode/
