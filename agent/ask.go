@@ -15,6 +15,13 @@ import (
 	"github.com/capyflow/vortexagent/llm"
 )
 
+// ErrIterationLimit 表示 Ask 走完最大工具调用轮数仍未拿到最终回答。
+//
+// 与其他失败路径不同，触发此项时会话**不回滚**：已完成的推理与工具结果留在
+// 历史里（工具副作用本就无法撤销，抹掉推理记录只会让状态失真），调用方可用
+// errors.Is 识别后继续追问或收尾。
+var ErrIterationLimit = errors.New("agent: 轮数上限")
+
 // Ask 处理一条用户输入，走完整个工具循环，返回最终回答文本。
 //
 // 流程：
@@ -24,7 +31,8 @@ import (
 //  4. 无工具调用 → 返回文本回答
 //
 // 无论成功失败，退出前都会：触发 OnError / OnFinish 钩子（见 Hooks）、
-// 在配置了 Store 时自动保存会话快照。失败时历史回滚到提问前。
+// 在配置了 Store 时自动保存会话快照。失败时历史回滚到提问前——唯一例外是轮数
+// 耗尽（见 ErrIterationLimit），此时已完成轮次保留在会话中。
 // AskOption 是 Ask 方法的可选参数
 type AskOption interface {
 	apply(*askConfig)
@@ -33,6 +41,7 @@ type AskOption interface {
 type askConfig struct {
 	skill    *Skill
 	jsonMode bool
+	maxIter  int
 }
 
 type withSkill struct {
@@ -59,6 +68,24 @@ func (w *withJSONMode) apply(cfg *askConfig) {
 // 解析响应仍是使用方的责任——建议对解析失败做重试或降级。
 func WithJSONMode() AskOption {
 	return &withJSONMode{}
+}
+
+type withMaxIterations struct {
+	n int
+}
+
+func (w *withMaxIterations) apply(cfg *askConfig) {
+	if w.n > 0 {
+		cfg.maxIter = w.n
+	}
+}
+
+// WithMaxIterations 覆盖本次提问允许的工具调用轮数（单次有效）。
+//
+// n <= 0 时忽略，沿用 Agent 的 Options.MaxIterations。多步计划、长程目标这类
+// 需要比默认更宽循环预算的场景用此项，而不必为不同预算再造一个 Agent 实例。
+func WithMaxIterations(n int) AskOption {
+	return &withMaxIterations{n: n}
 }
 
 func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInput string, opts ...AskOption) (answer string, err error) {
@@ -88,8 +115,14 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 	baseLen := len(session.Messages())
 	session.Add(llm.NewTextMessage(llm.RoleUser, userInput))
 
+	// 轮数上限：按次覆盖（WithMaxIterations）优先于 Agent 级配置。
+	maxIter := a.maxIter
+	if cfg.maxIter > 0 {
+		maxIter = cfg.maxIter
+	}
+
 	windowRetried := false
-	for iter := 1; iter <= a.maxIter; iter++ {
+	for iter := 1; iter <= maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			session.Rollback(baseLen)
 			return "", err
@@ -153,8 +186,8 @@ func (a *Agent) Ask(ctx context.Context, session *sessionstore.Session, userInpu
 			}
 		}
 	}
-	session.Rollback(baseLen)
-	return "", fmt.Errorf("agent: 工具调用超过 %d 轮仍未结束", a.maxIter)
+	// 轮数耗尽不回滚会话：已完成轮次与工具结果保留，调用方可继续推进或收尾。
+	return "", fmt.Errorf("agent: 工具调用超过 %d 轮仍未结束: %w", maxIter, ErrIterationLimit)
 }
 
 func (a *Agent) chat(ctx context.Context, session *sessionstore.Session, cfg *askConfig) (*llm.ChatResponse, error) {
