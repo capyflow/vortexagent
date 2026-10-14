@@ -5,6 +5,7 @@
 package llm
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,7 +46,8 @@ func TestOpenAI_ReplayNilArguments(t *testing.T) {
 			Arguments: nil, // nil map → 序列化必须是 "{}" 而非 "null"
 		}},
 	}
-	if _, err := p.Chat(t.Context(), &ChatRequest{
+	// context.Background 而非 t.Context()：后者是 go1.24 API，本模块 go.mod 声明 1.23。
+	if _, err := p.Chat(context.Background(), &ChatRequest{
 		Model:    "test",
 		Messages: []Message{NewTextMessage(RoleUser, "hi"), msg},
 	}, nil); err != nil {
