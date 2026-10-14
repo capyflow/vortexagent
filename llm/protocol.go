@@ -144,6 +144,7 @@ type ProviderOptions struct {
 	MaxTokens      int          // 最大输出 token，0 使用默认（Anthropic 必填，默认 4096）
 	Temperature    *float64     // 采样温度，nil 使用模型默认
 	ThinkingBudget int          // 思考预算 token（Anthropic），>0 时启用思考模式
+	StreamUsage    *bool        // 流式是否索取 usage 统计，nil 视为启用
 }
 
 // ProviderOption 修改 ProviderOptions。
@@ -184,6 +185,14 @@ func WithThinkingBudget(n int) ProviderOption {
 	return func(o *ProviderOptions) { o.ThinkingBudget = n }
 }
 
+// WithStreamUsage 控制流式请求是否附带 stream_options.include_usage。
+//
+// OpenAI 兼容网关在 stream=true 时默认不返回 usage，必须显式索取，否则
+// 流式对话的 token 统计恒为 0。个别严格网关会因未知字段报 400，可用此项关断。
+func WithStreamUsage(on bool) ProviderOption {
+	return func(o *ProviderOptions) { o.StreamUsage = &on }
+}
+
 // apply 将选项应用到配置。
 func (o *ProviderOptions) apply(opts []ProviderOption) {
 	for _, opt := range opts {
@@ -207,6 +216,9 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	if cfg.Temperature != nil {
 		opts = append(opts, WithTemperature(*cfg.Temperature))
 	}
+	if cfg.StreamUsage != nil {
+		opts = append(opts, WithStreamUsage(*cfg.StreamUsage))
+	}
 	switch cfg.Name {
 	case "openai":
 		return NewOpenAIProvider(cfg.APIKey, opts...), nil
@@ -227,4 +239,5 @@ type ProviderConfig struct {
 	Model       string   // 模型名称（可选，使用 provider 默认）
 	MaxTokens   int      // 最大输出 token（可选）
 	Temperature *float64 // 采样温度（可选）
+	StreamUsage *bool    // 流式是否索取 usage（可选，nil 视为启用；仅 OpenAI 兼容层生效）
 }

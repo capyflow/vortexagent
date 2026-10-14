@@ -31,6 +31,7 @@ type OpenAIProvider struct {
 	maxTokens     int
 	temperature   *float64
 	contextWindow int
+	streamUsage   bool
 }
 
 // NewOpenAIProvider 构造 OpenAI 兼容 provider。
@@ -55,6 +56,7 @@ func NewOpenAIProvider(apiKey string, opts ...ProviderOption) *OpenAIProvider {
 		maxTokens:     cfg.MaxTokens,
 		temperature:   cfg.Temperature,
 		contextWindow: cfg.ContextWindow,
+		streamUsage:   cfg.StreamUsage == nil || *cfg.StreamUsage,
 	}
 	if p.contextWindow == 0 {
 		p.contextWindow = GetContextWindow(p.model)
@@ -125,6 +127,9 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest, onDelta fun
 
 	streaming := onDelta != nil
 	wire.Stream = streaming
+	if streaming && p.streamUsage {
+		wire.StreamOptions = &wireStreamOptions{IncludeUsage: true}
+	}
 
 	body, err := json.Marshal(wire)
 	if err != nil {
@@ -435,9 +440,15 @@ type wireChatRequest struct {
 	Messages       []wireChatMessage   `json:"messages"`
 	Tools          []wireToolDecl      `json:"tools,omitempty"`
 	Stream         bool                `json:"stream,omitempty"`
+	StreamOptions  *wireStreamOptions  `json:"stream_options,omitempty"`
 	Temperature    *float64            `json:"temperature,omitempty"`
 	MaxTokens      int                 `json:"max_tokens,omitempty"`
 	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
+}
+
+// wireStreamOptions 是流式请求的附加选项。
+type wireStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // wireResponseFormat 是 OpenAI 的 response_format 字段（JSON 模式映射到这里）。
